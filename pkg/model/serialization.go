@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/gob"
 	"errors"
 	"io"
 )
@@ -429,5 +430,99 @@ func DeserializeFromPageBytes(data []byte) (interface{}, error) {
 		return DeserializeProperty(data)
 	default:
 		return nil, ErrInvalidEntityType
+	}
+}
+
+// Serialize is a generic function that serializes various types to bytes
+func Serialize(data interface{}) ([]byte, error) {
+	switch v := data.(type) {
+	case *Node:
+		return SerializeNode(v)
+	case Node:
+		return SerializeNode(&v)
+	case *Edge:
+		return SerializeEdge(v)
+	case Edge:
+		return SerializeEdge(&v)
+	case *Property:
+		return SerializeProperty(v)
+	case Property:
+		return SerializeProperty(&v)
+	case []uint64, []string, map[string]string:
+		// Generic binary encoding for other types
+		var buf bytes.Buffer
+		if err := binary.Write(&buf, binary.LittleEndian, SerializationMagic); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, SerializationVersion); err != nil {
+			return nil, err
+		}
+		
+		// Use gob encoding for generic types
+		enc := gob.NewEncoder(&buf)
+		if err := enc.Encode(v); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	default:
+		return nil, errors.New("unsupported type for serialization")
+	}
+}
+
+// Deserialize is a generic function that deserializes bytes into the specified type
+func Deserialize(data []byte, out interface{}) error {
+	if len(data) < 6 { // Magic(4) + Version(2)
+		return ErrInvalidSerializedData
+	}
+	
+	// Read and validate magic and version
+	buf := bytes.NewReader(data)
+	var magic uint32
+	var version uint16
+	
+	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
+		return err
+	}
+	if magic != SerializationMagic {
+		return ErrInvalidSerializedData
+	}
+	
+	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
+		return err
+	}
+	if version != SerializationVersion {
+		return ErrUnsupportedVersion
+	}
+	
+	// Handle different types based on the output parameter
+	switch out := out.(type) {
+	case *Node:
+		node, err := DeserializeNode(data)
+		if err != nil {
+			return err
+		}
+		*out = *node
+		return nil
+	case *Edge:
+		edge, err := DeserializeEdge(data)
+		if err != nil {
+			return err
+		}
+		*out = *edge
+		return nil
+	case *Property:
+		property, err := DeserializeProperty(data)
+		if err != nil {
+			return err
+		}
+		*out = *property
+		return nil
+	case *[]uint64, *[]string, *map[string]string:
+		// Generic binary decoding for other types
+		// Skip the header (already validated)
+		dec := gob.NewDecoder(bytes.NewReader(data[6:]))
+		return dec.Decode(out)
+	default:
+		return errors.New("unsupported type for deserialization")
 	}
 }
