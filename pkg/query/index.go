@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"path/filepath"
 	
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 	"git.canoozie.net/riddling/kgstore/pkg/storage"
