@@ -36,27 +36,27 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 **Phase 2: Storage Engine & Basic Indexing (2-3 months)**
 
 * **Storage Engine:**
-    * [ ] Implement `MemTable` with sorted map and write operations as an in-memory sorted map. Writes are always appended to the MemTable.
-    * [ ] Implement SSTable writing (serialization from Phase 1) as a Sorted String Table, immuatble, sorted files on disk.
-    * [ ] Implement reading from an SSTable.
-    * [ ] Implement Bloom Filter creation and lookup.
-    * [ ] When the MemTable reaches a certain size, it's data flushes to a new SSTable.
-    * [ ] Implement a background process that merges multiple SSTables into larger ones, reducing the number of files nad improving read performance. Start with a simple level-based compaction strategy.
-    * [ ] Implement basic file management system for SSTables.
-    * [ ] Implement a write-ahead log (WAL) for durability. This is *critical*
+    * [x] Implement `MemTable` with sorted map and write operations as an in-memory sorted map. Writes are always appended to the MemTable.
+    * [x] Implement SSTable writing (serialization from Phase 1) as a Sorted String Table, immuatble, sorted files on disk.
+    * [x] Implement reading from an SSTable.
+    * [x] Implement Bloom Filter creation and lookup.
+    * [x] When the MemTable reaches a certain size, it's data flushes to a new SSTable.
+    * [x] Implement a background process that merges multiple SSTables into larger ones, reducing the number of files nad improving read performance. Start with a simple level-based compaction strategy.
+    * [x] Implement basic file management system for SSTables.
+    * [x] Implement a write-ahead log (WAL) for durability. This is *critical*
 * **Basic Indexing:**
-    * [ ] Implement primary index (Node ID -> Node data)
-    * [ ] Implement Secondary index for Node Labels (Label -> List of Node IDs)
-    * [ ] Implement Secondary index for Edge Labels (Label -> List of Edge IDs)
-    * [ ] Implement index update logic during write operations
+    * [x] Implement primary index (Node ID -> Node data)
+    * [x] Implement Secondary index for Node Labels (Label -> List of Node IDs)
+    * [x] Implement Secondary index for Edge Labels (Label -> List of Edge IDs)
+    * [x] Implement index update logic during write operations
 * **Integration Tests:**
-    * [ ] Integration tests to verify that Nodes and Edges can be written to and read from storage.
-    * [ ] Integration tests to verify that the index is working correctly.
-    * [ ] Integration tests to verify that data consistency is maintained.
-    * [ ] Implement performance benchmarks for read/write operations.
-    * [ ] Performance tests to measure read/write throughput and latency.
-    * [ ] Durability tests to verify the WAL is working correctly.
-    * [ ] Stress tests to verify the database's stability under heavy load.
+    * [x] Integration tests to verify that Nodes and Edges can be written to and read from storage.
+    * [x] Integration tests to verify that the index is working correctly.
+    * [x] Integration tests to verify that data consistency is maintained.
+    * [x] Implement performance benchmarks for read/write operations.
+    * [x] Performance tests to measure read/write throughput and latency.
+    * [x] Durability tests to verify the WAL is working correctly.
+    * [x] Stress tests to verify the database's stability under heavy load.
 
 **Phase 3: Query Processing & Basic Query Language (2-3 months)**
 
