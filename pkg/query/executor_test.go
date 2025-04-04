@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,7 +72,15 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		{ID: 5, Label: "Company", Properties: map[string]string{"name": "TechCorp", "founded": "2015"}},
 	}
 
-	// Add nodes to the node index and update node label index
+	// Create maps to collect all nodes by label
+	nodesByLabel := make(map[string][]uint64)
+	
+	// First pass: collect all nodes by label
+	for _, node := range nodes {
+		nodesByLabel[node.Label] = append(nodesByLabel[node.Label], node.ID)
+	}
+
+	// Add nodes to the node index
 	for _, node := range nodes {
 		// Serialize the node
 		nodeBytes, err := model.Serialize(node)
@@ -84,48 +93,52 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to add node to index: %v", err)
 		}
-
-		// Update node label index
-		key := []byte(node.Label)
-		var nodeIDs []uint64
-
-		// Check if the label already has nodes
-		nodeIDsBytes, err := nodeLabels.Get(key)
-		if err == nil {
-			// Label exists, deserialize node IDs
-			err = model.Deserialize(nodeIDsBytes, &nodeIDs)
-			if err != nil {
-				t.Fatalf("Failed to deserialize node IDs: %v", err)
-			}
-		}
-
-		// Add the node ID
-		nodeIDs = append(nodeIDs, node.ID)
-
-		// Serialize and update
-		nodeIDsBytes, err = model.Serialize(nodeIDs)
+	}
+	
+	// Add node labels to the label index
+	for label, nodeIDs := range nodesByLabel {
+		// Serialize the node IDs
+		nodeIDsBytes, err := model.Serialize(nodeIDs)
 		if err != nil {
-			t.Fatalf("Failed to serialize node IDs: %v", err)
+			t.Fatalf("Failed to serialize node IDs for label %s: %v", label, err)
 		}
-
-		err = nodeLabels.Put(key, nodeIDsBytes)
+		
+		// Add to node label index
+		err = nodeLabels.Put([]byte(label), nodeIDsBytes)
 		if err != nil {
-			t.Fatalf("Failed to update node label index: %v", err)
+			t.Fatalf("Failed to add node label index entry for label %s: %v", label, err)
 		}
 	}
 
 	// Create some edges
 	edges := []model.Edge{
-		{ID: "1-2", Source: 1, Target: 2, Label: "KNOWS", Properties: map[string]string{"since": "2018"}},
-		{ID: "1-3", Source: 1, Target: 3, Label: "KNOWS", Properties: map[string]string{"since": "2019"}},
-		{ID: "2-3", Source: 2, Target: 3, Label: "KNOWS", Properties: map[string]string{"since": "2020"}},
-		{ID: "1-4", Source: 1, Target: 4, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2015"}},
-		{ID: "2-5", Source: 2, Target: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Manager", "since": "2018"}},
-		{ID: "3-5", Source: 3, Target: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2016"}},
+		{SourceID: 1, TargetID: 2, Label: "KNOWS", Properties: map[string]string{"since": "2018"}},
+		{SourceID: 1, TargetID: 3, Label: "KNOWS", Properties: map[string]string{"since": "2019"}},
+		{SourceID: 2, TargetID: 3, Label: "KNOWS", Properties: map[string]string{"since": "2020"}},
+		{SourceID: 1, TargetID: 4, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2015"}},
+		{SourceID: 2, TargetID: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Manager", "since": "2018"}},
+		{SourceID: 3, TargetID: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2016"}},
 	}
 
-	// Add edges to the edge index and update edge label index
+	// Create maps to collect edges by label, outgoing, and incoming
+	edgesByLabel := make(map[string][]string)
+	outgoingByNode := make(map[uint64][]string)
+	incomingByNode := make(map[uint64][]string)
+	
+	// Add edges to the edge index 
 	for _, edge := range edges {
+		// Create edge ID from source and target
+		edgeID := fmt.Sprintf("%d-%d", edge.SourceID, edge.TargetID)
+		
+		// Collect by label
+		edgesByLabel[edge.Label] = append(edgesByLabel[edge.Label], edgeID)
+		
+		// Collect by source (outgoing)
+		outgoingByNode[edge.SourceID] = append(outgoingByNode[edge.SourceID], edgeID)
+		
+		// Collect by target (incoming)
+		incomingByNode[edge.TargetID] = append(incomingByNode[edge.TargetID], edgeID)
+		
 		// Serialize the edge
 		edgeBytes, err := model.Serialize(edge)
 		if err != nil {
@@ -133,93 +146,56 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		}
 
 		// Add to edge index
-		err = edgeIndex.Put([]byte(FormatEdgeKey(edge.ID)), edgeBytes)
+		err = edgeIndex.Put([]byte(FormatEdgeKey(edgeID)), edgeBytes)
 		if err != nil {
 			t.Fatalf("Failed to add edge to index: %v", err)
 		}
-
-		// Update edge label index
-		key := []byte(edge.Label)
-		var edgeIDs []string
-
-		// Check if the label already has edges
-		edgeIDsBytes, err := edgeLabels.Get(key)
-		if err == nil {
-			// Label exists, deserialize edge IDs
-			err = model.Deserialize(edgeIDsBytes, &edgeIDs)
-			if err != nil {
-				t.Fatalf("Failed to deserialize edge IDs: %v", err)
-			}
-		}
-
-		// Add the edge ID
-		edgeIDs = append(edgeIDs, edge.ID)
-
-		// Serialize and update
-		edgeIDsBytes, err = model.Serialize(edgeIDs)
+	}
+	
+	// Add edge labels to the label index
+	for label, edgeIDs := range edgesByLabel {
+		// Serialize the edge IDs
+		edgeIDsBytes, err := model.Serialize(edgeIDs)
 		if err != nil {
-			t.Fatalf("Failed to serialize edge IDs: %v", err)
+			t.Fatalf("Failed to serialize edge IDs for label %s: %v", label, err)
 		}
-
-		err = edgeLabels.Put(key, edgeIDsBytes)
+		
+		// Add to edge label index
+		err = edgeLabels.Put([]byte(label), edgeIDsBytes)
 		if err != nil {
-			t.Fatalf("Failed to update edge label index: %v", err)
+			t.Fatalf("Failed to add edge label index entry for label %s: %v", label, err)
 		}
-
-		// Update outgoing edges index
-		outKey := []byte(FormatOutgoingEdgesKey(edge.Source))
-		var outEdgeIDs []string
-
-		// Check if the node already has outgoing edges
-		outEdgeIDsBytes, err := edgeIndex.Get(outKey)
-		if err == nil {
-			// Node has outgoing edges, deserialize edge IDs
-			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
-			if err != nil {
-				t.Fatalf("Failed to deserialize outgoing edge IDs: %v", err)
-			}
-		}
-
-		// Add the edge ID
-		outEdgeIDs = append(outEdgeIDs, edge.ID)
-
-		// Serialize and update
-		outEdgeIDsBytes, err = model.Serialize(outEdgeIDs)
+	}
+	
+	// Add outgoing edges to the outgoing index
+	for nodeID, edgeIDs := range outgoingByNode {
+		// Serialize the edge IDs
+		edgeIDsBytes, err := model.Serialize(edgeIDs)
 		if err != nil {
-			t.Fatalf("Failed to serialize outgoing edge IDs: %v", err)
+			t.Fatalf("Failed to serialize outgoing edge IDs for node %d: %v", nodeID, err)
 		}
-
-		err = edgeIndex.Put(outKey, outEdgeIDsBytes)
+		
+		// Add to outgoing index
+		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
+		err = edgeIndex.Put(outKey, edgeIDsBytes)
 		if err != nil {
-			t.Fatalf("Failed to update outgoing edges index: %v", err)
+			t.Fatalf("Failed to add outgoing edges index entry for node %d: %v", nodeID, err)
 		}
-
-		// Update incoming edges index
-		inKey := []byte(FormatIncomingEdgesKey(edge.Target))
-		var inEdgeIDs []string
-
-		// Check if the node already has incoming edges
-		inEdgeIDsBytes, err := edgeIndex.Get(inKey)
-		if err == nil {
-			// Node has incoming edges, deserialize edge IDs
-			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
-			if err != nil {
-				t.Fatalf("Failed to deserialize incoming edge IDs: %v", err)
-			}
-		}
-
-		// Add the edge ID
-		inEdgeIDs = append(inEdgeIDs, edge.ID)
-
-		// Serialize and update
-		inEdgeIDsBytes, err = model.Serialize(inEdgeIDs)
+	}
+	
+	// Add incoming edges to the incoming index
+	for nodeID, edgeIDs := range incomingByNode {
+		// Serialize the edge IDs
+		edgeIDsBytes, err := model.Serialize(edgeIDs)
 		if err != nil {
-			t.Fatalf("Failed to serialize incoming edge IDs: %v", err)
+			t.Fatalf("Failed to serialize incoming edge IDs for node %d: %v", nodeID, err)
 		}
-
-		err = edgeIndex.Put(inKey, inEdgeIDsBytes)
+		
+		// Add to incoming index
+		inKey := []byte(FormatIncomingEdgesKey(nodeID))
+		err = edgeIndex.Put(inKey, edgeIDsBytes)
 		if err != nil {
-			t.Fatalf("Failed to update incoming edges index: %v", err)
+			t.Fatalf("Failed to add incoming edges index entry for node %d: %v", nodeID, err)
 		}
 	}
 }
@@ -503,15 +479,15 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 
 	// Test cases
 	tests := []struct {
-		name    string
+		name     string
 		queryStr string
-		wantErr bool
+		wantErr  bool
 		validate func(*Result, *testing.T)
 	}{
 		{
-			name: "Find nodes by label - Person",
+			name:     "Find nodes by label - Person",
 			queryStr: `FIND_NODES_BY_LABEL(label: "Person")`,
-			wantErr: false,
+			wantErr:  false,
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Nodes) != 3 {
 					t.Errorf("Expected 3 nodes, got %d", len(result.Nodes))
@@ -519,9 +495,9 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 			},
 		},
 		{
-			name: "Find neighbors - Both directions",
+			name:     "Find neighbors - Both directions",
 			queryStr: `FIND_NEIGHBORS(nodeId: "1")`, // Test default direction
-			wantErr: false,
+			wantErr:  false,
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Nodes) < 3 {
 					t.Errorf("Expected at least 3 neighbor nodes, got %d", len(result.Nodes))
@@ -529,9 +505,9 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 			},
 		},
 		{
-			name: "Find path - With default max hops",
+			name:     "Find path - With default max hops",
 			queryStr: `FIND_PATH(sourceId: "1", targetId: "5")`, // Test default max hops
-			wantErr: false,
+			wantErr:  false,
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Paths) != 1 {
 					t.Errorf("Expected 1 path, got %d", len(result.Paths))
@@ -539,9 +515,9 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 			},
 		},
 		{
-			name: "Invalid query - Parse error",
+			name:     "Invalid query - Parse error",
 			queryStr: `INVALID_QUERY(foo: "bar")`,
-			wantErr: true,
+			wantErr:  true,
 			validate: func(result *Result, t *testing.T) {
 				// Should get an error, result will be nil
 			},
