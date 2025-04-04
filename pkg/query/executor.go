@@ -563,14 +563,14 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	}
 
 	// Add the source node at the beginning
-	sourceKey = []byte(fmt.Sprintf("node:%d", sourceID))
-	sourceBytes, err = e.NodeIndex.Get(sourceKey)
+	sourceNodeKey := []byte(fmt.Sprintf("node:%d", sourceID))
+	sourceNodeBytes, err := e.NodeIndex.Get(sourceNodeKey)
 	if err != nil {
 		return nil, fmt.Errorf("error getting node %d: %w", sourceID, err)
 	}
 
 	var sourceNode model.Node
-	err = model.Deserialize(sourceBytes, &sourceNode)
+	err = model.Deserialize(sourceNodeBytes, &sourceNode)
 	if err != nil {
 		return nil, fmt.Errorf("error deserializing node %d: %w", sourceID, err)
 	}
