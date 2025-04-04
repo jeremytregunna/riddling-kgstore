@@ -230,8 +230,8 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 				}
 
 				// Add target node ID if not already added
-				if !neighborIDs[edge.Target] {
-					neighborIDs[edge.Target] = true
+				if !neighborIDs[edge.TargetID] {
+					neighborIDs[edge.TargetID] = true
 				}
 			}
 		}
@@ -270,8 +270,8 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 				}
 
 				// Add source node ID if not already added
-				if !neighborIDs[edge.Source] {
-					neighborIDs[edge.Source] = true
+				if !neighborIDs[edge.SourceID] {
+					neighborIDs[edge.SourceID] = true
 				}
 			}
 		}

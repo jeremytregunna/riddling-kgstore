@@ -258,10 +258,10 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 		edges = append(edges, edge)
 		
 		// Add neighbor node ID
-		if edge.Source == nodeID {
-			nodeIDs[edge.Target] = true
-		} else if edge.Target == nodeID {
-			nodeIDs[edge.Source] = true
+		if edge.SourceID == nodeID {
+			nodeIDs[edge.TargetID] = true
+		} else if edge.TargetID == nodeID {
+			nodeIDs[edge.SourceID] = true
 		}
 	}
 
@@ -432,12 +432,12 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 					}
 
 					// Skip if target node is already visited
-					if visited[edge.Target] {
+					if visited[edge.TargetID] {
 						continue
 					}
 
 					// Record the parent
-					parents[edge.Target] = struct {
+					parents[edge.TargetID] = struct {
 						NodeID uint64
 						Edge   model.Edge
 					}{
@@ -446,14 +446,14 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 					}
 
 					// Check if we reached the target node
-					if edge.Target == targetID {
+					if edge.TargetID == targetID {
 						found = true
 						break
 					}
 
 					// Mark target as visited and add to queue
-					visited[edge.Target] = true
-					queue = append(queue, edge.Target)
+					visited[edge.TargetID] = true
+					queue = append(queue, edge.TargetID)
 				}
 			}
 
@@ -493,12 +493,12 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 					}
 
 					// Skip if source node is already visited
-					if visited[edge.Source] {
+					if visited[edge.SourceID] {
 						continue
 					}
 
 					// Record the parent
-					parents[edge.Source] = struct {
+					parents[edge.SourceID] = struct {
 						NodeID uint64
 						Edge   model.Edge
 					}{
@@ -507,14 +507,14 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 					}
 
 					// Check if we reached the target node
-					if edge.Source == targetID {
+					if edge.SourceID == targetID {
 						found = true
 						break
 					}
 
 					// Mark source as visited and add to queue
-					visited[edge.Source] = true
-					queue = append(queue, edge.Source)
+					visited[edge.SourceID] = true
+					queue = append(queue, edge.SourceID)
 				}
 			}
 
