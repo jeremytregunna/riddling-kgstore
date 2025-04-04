@@ -6,11 +6,11 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 
 * **Data Structure Definitions:**
     * [x] Define `Node` struct: ID (uint64), Label (string), Properties (map[string]string)
-    * [ ] Define `Edge` struct: Source Node ID (uint64), Target Node ID (uint64), Label (string), Properties (map[string]string)
-    * [ ] Define `Property` struct: Key (string), Value (string) - Consider different value types later.
-    * [ ] Define `Page` struct: Page ID (uint64), Data ([]byte),  Flags (e.g., allocated, dirty)
-    * [ ] Implement basic error handling for data structure operations.
-    * [ ] Implement basic logging for data structure operations.
+    * [x] Define `Edge` struct: Source Node ID (uint64), Target Node ID (uint64), Label (string), Properties (map[string]string)
+    * [x] Define `Property` struct: Key (string), Value (string) - Consider different value types later.
+    * [x] Define `Page` struct: Page ID (uint64), Data ([]byte),  Flags (e.g., allocated, dirty)
+    * [x] Implement basic error handling for data structure operations.
+    * [x] Implement basic logging for data structure operations.
 * **Serialization/Deserialization Library:**
     * [ ] Implement functions to serialize `Node`, `Edge`, `Property` to custom encoding/binary format.
     * [ ] Implement functions to deserialize from custom encoding/binary format to `Node`, `Edge`, `Property`.
