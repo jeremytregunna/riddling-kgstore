@@ -23,15 +23,15 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [x] Implement a simple page table (e.g., vector of booleans indicating allocation status).
     * [x] Implement basic error handling for page allocation/deallocation (out of memory, invalid page ID).
 * **Unit Tests:**
-    * [ ] Unit tests for `Node` struct/class (creation, access, modification).
-    * [ ] Unit tests for `Edge` struct/class (creation, access, modification).
-    * [ ] Unit tests for `Property` struct/class (creation, access, modification).
-    * [ ] Unit tests for `Page` struct/class (creation, access, modification).
-    * [ ] Unit tests for serialization/deserialization of `Node`, `Edge`, `Property`.
-    * [ ] Unit tests for `PageAllocator` (allocation, deallocation, error handling).
-    * [ ] Implement test coverage reporting.
-    * [ ] Implement memory leak detection during testing.
-    * [ ] Performance benchmarks for read/write operations.
+    * [x] Unit tests for `Node` struct/class (creation, access, modification).
+    * [x] Unit tests for `Edge` struct/class (creation, access, modification).
+    * [x] Unit tests for `Property` struct/class (creation, access, modification).
+    * [x] Unit tests for `Page` struct/class (creation, access, modification).
+    * [x] Unit tests for serialization/deserialization of `Node`, `Edge`, `Property`.
+    * [x] Unit tests for `PageAllocator` (allocation, deallocation, error handling).
+    * [x] Implement test coverage reporting.
+    * [x] Implement memory leak detection during testing.
+    * [x] Performance benchmarks for read/write operations.
 
 **Phase 2: Storage Engine & Basic Indexing (2-3 months)**
 
