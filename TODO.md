@@ -61,22 +61,22 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 **Phase 3: Query Processing & Basic Query Language (2-3 months)**
 
 * **Query Processing:**
-    * [ ] Define a basic query language (e.g., a simple graph pattern matching language, or a subset of Cypher).
-    * [ ] Implement a query parser to parse the query language (e.g., text/template or a dedicated parser generator).
-    * [ ] Implement a query optimizer to optimize the query execution plan (can be simple rule-based optimizer).
-    * [ ] Implement a query executor to execute the query plan.
-    * [ ] Implement a basic graph traversal algorithm (e.g., depth-first search, breadth-first search).
+    * [x] Define a basic query language (e.g., a simple graph pattern matching language, or a subset of Cypher).
+    * [x] Implement a query parser to parse the query language (e.g., text/template or a dedicated parser generator).
+    * [x] Implement a query optimizer to optimize the query execution plan (can be simple rule-based optimizer).
+    * [x] Implement a query executor to execute the query plan.
+    * [x] Implement a basic graph traversal algorithm (e.g., depth-first search, breadth-first search).
 * **Query Language Implementation:**
-    * [ ] Implement `FindNodesByLabel()` query.
-    * [ ] Implement `FindEdgesByLabel()` query.
-    * [ ] Implement `FindNeighbors()` query.
-    * [ ] Implement `FindPath()` query (limited to a small number of hops).
+    * [x] Implement `FindNodesByLabel()` query.
+    * [x] Implement `FindEdgesByLabel()` query.
+    * [x] Implement `FindNeighbors()` query.
+    * [x] Implement `FindPath()` query (limited to a small number of hops).
 * **Testing:**
-    * [ ] Unit tests for query parser.
-    * [ ] Unit tests for query optimizer.
-    * [ ] Integration tests for query execution.
-    * [ ] Performance benchmarks for different query types.
-    * [ ] Implement a test suite with a variety of graph data.
+    * [x] Unit tests for query parser.
+    * [x] Unit tests for query optimizer.
+    * [x] Integration tests for query execution.
+    * [x] Performance benchmarks for different query types.
+    * [x] Implement a test suite with a variety of graph data.
 
 **Phase 4: Advanced Indexing & Optimization (2-3 months)**
 
