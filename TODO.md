@@ -12,10 +12,10 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [x] Implement basic error handling for data structure operations.
     * [x] Implement basic logging for data structure operations.
 * **Serialization/Deserialization Library:**
-    * [ ] Implement functions to serialize `Node`, `Edge`, `Property` to custom encoding/binary format.
-    * [ ] Implement functions to deserialize from custom encoding/binary format to `Node`, `Edge`, `Property`.
-    * [ ] Implement functions to serialize/deserialize byte arrays directly to/from `Page` data.
-    * [ ] Implement error handling for serialization/deserialization.
+    * [x] Implement functions to serialize `Node`, `Edge`, `Property` to custom encoding/binary format.
+    * [x] Implement functions to deserialize from custom encoding/binary format to `Node`, `Edge`, `Property`.
+    * [x] Implement functions to serialize/deserialize byte arrays directly to/from `Page` data.
+    * [x] Implement error handling for serialization/deserialization.
 * **Basic Page Management:**
     * [ ] Implement a `PageAllocator` struct.
     * [ ] Implement `AllocatePage()` function.
