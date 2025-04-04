@@ -49,14 +49,6 @@ func (e ErrPropertyNotFound) Error() string {
 	return fmt.Sprintf("property not found for key: %s", e.Key)
 }
 
-// ErrInvalidPageID is returned when an operation is performed with an invalid page ID
-type ErrInvalidPageID struct {
-	ID uint64
-}
-
-func (e ErrInvalidPageID) Error() string {
-	return fmt.Sprintf("invalid page ID: %d", e.ID)
-}
 
 // ErrPageDataSizeExceeded is returned when attempting to write data that exceeds the page size
 type ErrPageDataSizeExceeded struct {

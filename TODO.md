@@ -17,11 +17,11 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [x] Implement functions to serialize/deserialize byte arrays directly to/from `Page` data.
     * [x] Implement error handling for serialization/deserialization.
 * **Basic Page Management:**
-    * [ ] Implement a `PageAllocator` struct.
-    * [ ] Implement `AllocatePage()` function.
-    * [ ] Implement `DeallocatePage()` function.
-    * [ ] Implement a simple page table (e.g., vector of booleans indicating allocation status).
-    * [ ] Implement basic error handling for page allocation/deallocation (out of memory, invalid page ID).
+    * [x] Implement a `PageAllocator` struct.
+    * [x] Implement `AllocatePage()` function.
+    * [x] Implement `DeallocatePage()` function.
+    * [x] Implement a simple page table (e.g., vector of booleans indicating allocation status).
+    * [x] Implement basic error handling for page allocation/deallocation (out of memory, invalid page ID).
 * **Unit Tests:**
     * [ ] Unit tests for `Node` struct/class (creation, access, modification).
     * [ ] Unit tests for `Edge` struct/class (creation, access, modification).
