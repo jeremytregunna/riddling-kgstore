@@ -230,12 +230,11 @@ func (e *StorageEngine) Put(key, value []byte) error {
 		return ErrEngineClosed
 	}
 
-	// Record the operation in the WAL
-	if err := e.wal.RecordPut(key, value); err != nil {
-		return fmt.Errorf("failed to record put in WAL: %w", err)
-	}
+	// Create a transaction for this operation to ensure atomicity
+	tx := e.txManager.Begin()
+	txID := tx.id
 
-	// Check if the MemTable is full
+	// Check if the MemTable is full before processing the operation
 	if e.memTable.IsFull() {
 		// Mark the current MemTable as immutable
 		e.memTable.MarkFlushed()
@@ -252,9 +251,22 @@ func (e *StorageEngine) Put(key, value []byte) error {
 		e.compactionCond.Signal()
 	}
 
+	// Record the operation in the WAL as part of the transaction
+	if err := e.wal.RecordPutInTransaction(key, value, txID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to record put in WAL: %w", err)
+	}
+
 	// Add the key-value pair to the MemTable
 	if err := e.memTable.Put(key, value); err != nil {
+		// If MemTable update fails, roll back the transaction
+		tx.Rollback()
 		return fmt.Errorf("failed to add key-value pair to MemTable: %w", err)
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -309,12 +321,11 @@ func (e *StorageEngine) Delete(key []byte) error {
 		return ErrEngineClosed
 	}
 
-	// Record the delete operation in the WAL
-	if err := e.wal.RecordDelete(key); err != nil {
-		return fmt.Errorf("failed to record delete in WAL: %w", err)
-	}
+	// Create a transaction for this operation to ensure atomicity
+	tx := e.txManager.Begin()
+	txID := tx.id
 
-	// Check if the MemTable is full
+	// Check if the MemTable is full before processing the operation
 	if e.memTable.IsFull() {
 		// Mark the current MemTable as immutable
 		e.memTable.MarkFlushed()
@@ -331,9 +342,22 @@ func (e *StorageEngine) Delete(key []byte) error {
 		e.compactionCond.Signal()
 	}
 
+	// Record the delete operation in the WAL as part of the transaction
+	if err := e.wal.RecordDeleteInTransaction(key, txID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to record delete in WAL: %w", err)
+	}
+
 	// Delete the key from the MemTable
 	if err := e.memTable.Delete(key); err != nil {
+		// If MemTable update fails, roll back the transaction
+		tx.Rollback() 
 		return fmt.Errorf("failed to delete key from MemTable: %w", err)
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
