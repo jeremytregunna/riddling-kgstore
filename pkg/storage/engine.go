@@ -32,6 +32,7 @@ type StorageEngine struct {
 	isOpen           bool             // Whether the storage engine is open
 	nextSSTableID    uint64           // Next SSTable ID to use
 	leveledCompactor *LeveledCompaction // Manages the leveled compaction strategy
+	txManager        *TransactionManager // Transaction manager for atomic operations
 }
 
 // EngineConfig holds configuration options for the storage engine
@@ -122,6 +123,13 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		Comparator: config.Comparator,
 	})
 
+	// Create the transaction manager
+	txManager, err := NewTransactionManager(config.DataDir, config.Logger)
+	if err != nil {
+		wal.Close()
+		return nil, fmt.Errorf("failed to create transaction manager: %w", err)
+	}
+
 	// Create the storage engine
 	engine := &StorageEngine{
 		config:           config,
@@ -134,6 +142,7 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		isOpen:           true,
 		nextSSTableID:    1,
 		leveledCompactor: NewLeveledCompaction(),
+		txManager:        txManager,
 	}
 
 	// Set up the condition variable for compaction
@@ -198,6 +207,13 @@ func (e *StorageEngine) Close() error {
 	for _, sstable := range e.sstables {
 		if err := sstable.Close(); err != nil {
 			e.logger.Error("Failed to close SSTable: %v", err)
+		}
+	}
+	
+	// Close the transaction manager
+	if e.txManager != nil {
+		if err := e.txManager.Close(); err != nil {
+			e.logger.Error("Failed to close transaction manager: %v", err)
 		}
 	}
 
@@ -498,6 +514,9 @@ func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 		return nil
 	}
 
+	// Begin a transaction for the flush operation
+	tx := e.txManager.Begin()
+	
 	// Create a new SSTable from the MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
 	sstConfig := SSTableConfig{
@@ -509,11 +528,31 @@ func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 
 	sstable, err := CreateSSTable(sstConfig, memTable)
 	if err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to create SSTable: %w", err)
 	}
+	
+	// Add the 'add' operation to the transaction
+	tx.AddOperation(TransactionOperation{
+		Type:   "add",
+		Target: "sstable",
+		ID:     sstable.ID(),
+	})
+	
+	// Prepare in-memory update
+	newSSTables := make([]*SSTable, len(e.sstables)+1)
+	copy(newSSTables, e.sstables)
+	newSSTables[len(newSSTables)-1] = sstable
+	
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		// On commit failure, we should close the new SSTable to release resources
+		sstable.Close()
+		return fmt.Errorf("failed to commit flush transaction: %w", err)
+	}
 
-	// Add the SSTable to the list
-	e.sstables = append(e.sstables, sstable)
+	// After successful commit, update in-memory state
+	e.sstables = newSSTables
 	e.nextSSTableID++
 
 	e.logger.Info("Flushed MemTable to SSTable %d with %d keys", sstable.ID(), sstable.KeyCount())
@@ -871,6 +910,9 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		
 		iter.Close()
 	}
+
+	// Begin a transaction for the compaction operation
+	tx := e.txManager.Begin()
 	
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
@@ -883,28 +925,31 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	
 	mergedSSTable, err := CreateSSTable(sstConfig, mergedMemTable)
 	if err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to create merged SSTable: %w", err)
 	}
 	
-	// Close and remove the old SSTables from level 0 and level 1
+	// Add the 'add' operation to the transaction
+	tx.AddOperation(TransactionOperation{
+		Type:   "add",
+		Target: "sstable",
+		ID:     mergedSSTable.ID(),
+	})
+	
+	// Add 'remove' operations for all SSTables that will be removed
 	allSSTablesToRemove := append(lc.Levels[0], lc.Levels[1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
 	for _, sstable := range allSSTablesToRemove {
 		oldIDs = append(oldIDs, sstable.ID())
-		sstable.Close()
-		
-		// Remove the files
-		dataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", sstable.ID()))
-		indexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", sstable.ID()))
-		filterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", sstable.ID()))
-		
-		os.Remove(dataFile)
-		os.Remove(indexFile)
-		os.Remove(filterFile)
+		tx.AddOperation(TransactionOperation{
+			Type:   "remove",
+			Target: "sstable",
+			ID:     sstable.ID(),
+		})
 	}
 	
-	// Update the SSTable list - keep only those not in levels 0 or 1
-	newSSTables := make([]*SSTable, 0)
+	// Update the in-memory state (this happens before commit to ensure consistency)
+	newSSTables := make([]*SSTable, 0, len(e.sstables) - len(allSSTablesToRemove) + 1)
 	for _, sstable := range e.sstables {
 		isInCompactedLevels := false
 		for _, oldSSTable := range allSSTablesToRemove {
@@ -918,10 +963,24 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		}
 	}
 	
-	// Add the new SSTable
+	// Add the new SSTable to our in-memory list
 	newSSTables = append(newSSTables, mergedSSTable)
+	
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		// On commit failure, we should close the new SSTable to release resources
+		mergedSSTable.Close()
+		return fmt.Errorf("failed to commit compaction transaction: %w", err)
+	}
+	
+	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
+	
+	// Close old SSTables since they've been removed
+	for _, sstable := range allSSTablesToRemove {
+		sstable.Close()
+	}
 	
 	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys", 
 		len(oldIDs), oldIDs, mergedSSTable.ID(), mergedSSTable.KeyCount())
@@ -1003,6 +1062,9 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 		iter.Close()
 	}
 	
+	// Begin a transaction for the compaction operation
+	tx := e.txManager.Begin()
+	
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
 	sstConfig := SSTableConfig{
@@ -1014,28 +1076,31 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 	
 	mergedSSTable, err := CreateSSTable(sstConfig, mergedMemTable)
 	if err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to create merged SSTable: %w", err)
 	}
 	
-	// Close and remove the old SSTables from both levels
+	// Add the 'add' operation to the transaction
+	tx.AddOperation(TransactionOperation{
+		Type:   "add",
+		Target: "sstable",
+		ID:     mergedSSTable.ID(),
+	})
+	
+	// Add 'remove' operations for all SSTables that will be removed
 	allSSTablesToRemove := append(lc.Levels[level], lc.Levels[level+1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
 	for _, sstable := range allSSTablesToRemove {
 		oldIDs = append(oldIDs, sstable.ID())
-		sstable.Close()
-		
-		// Remove the files
-		dataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", sstable.ID()))
-		indexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", sstable.ID()))
-		filterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", sstable.ID()))
-		
-		os.Remove(dataFile)
-		os.Remove(indexFile)
-		os.Remove(filterFile)
+		tx.AddOperation(TransactionOperation{
+			Type:   "remove",
+			Target: "sstable",
+			ID:     sstable.ID(),
+		})
 	}
 	
-	// Update the SSTable list - keep only those not in the compacted levels
-	newSSTables := make([]*SSTable, 0)
+	// Update the in-memory state (prepare the new state)
+	newSSTables := make([]*SSTable, 0, len(e.sstables) - len(allSSTablesToRemove) + 1)
 	for _, sstable := range e.sstables {
 		isInCompactedLevels := false
 		for _, oldSSTable := range allSSTablesToRemove {
@@ -1049,10 +1114,24 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 		}
 	}
 	
-	// Add the new SSTable
+	// Add the new SSTable to our in-memory list
 	newSSTables = append(newSSTables, mergedSSTable)
+	
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		// On commit failure, we should close the new SSTable to release resources
+		mergedSSTable.Close()
+		return fmt.Errorf("failed to commit compaction transaction: %w", err)
+	}
+	
+	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
+	
+	// Close old SSTables since they've been removed
+	for _, sstable := range allSSTablesToRemove {
+		sstable.Close()
+	}
 	
 	// In a full implementation, we might want to check if the resulting compaction
 	// makes the next level too large, and trigger another compaction if needed
