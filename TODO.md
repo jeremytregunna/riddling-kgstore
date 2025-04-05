@@ -81,14 +81,17 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 **Phase 4: Advanced Indexing & Optimization (2-3 months)**
 
 * **Advanced Indexing:**
-    * [ ] Implement a B-tree index on Node labels.
-    * [ ] Implement a full-text index on Node properties.
-    * [ ] Implement a spatial index (if applicable).
+    * [ ] Implement LSM-tree based index on Node labels (consistent with storage engine architecture).
+    * [ ] Implement full-text index as specialized SSTable format for Node properties.
+    * [ ] Implement spatial index as specialized SSTable format (if applicable).
 * **Optimization:**
-    * [ ] Implement query caching (using sync.Map).
+    * [ ] Implement LRU query cache with configurable size limits to prevent memory explosion.
     * [ ] Implement query rewriting (e.g., constant folding).
     * [ ] Implement parallel query execution (using goroutines and channels or workgroups, whatever works).
     * [ ] Implement data compression (could be compress/gzip or similar, but has to be fast and good performance).
+    * [ ] Implement property value statistics for better query optimization.
+    * [ ] Implement columnar storage for property indexes to improve compression and query performance.
+    * [ ] Implement transaction buffer with size limits to trigger background flushes when reaching thresholds.
 * **Testing:**
     * [ ] Performance benchmarks for different indexing strategies.
     * [ ] Performance benchmarks for different optimization techniques.

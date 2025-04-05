@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Testing**: Maintain 100% test coverage for core components
 
 ## Project Structure
-Single-file database format for knowledge graphs using B-Tree indexing, page-based storage, and Write-Ahead Logging (WAL) for reliability.
+Single-file database format for knowledge graphs, full details in the ARCHITECTURE.md file.
 
 ## Module name
 As you build more and more of the project, you must be aware when importing other pieces of code that the module name is correct, so read go.mod to figure that out.
