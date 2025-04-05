@@ -252,47 +252,47 @@ func TestErrorCases(t *testing.T) {
 func TestPageDataSerialization(t *testing.T) {
 	// Create a page
 	page := NewPage(1, 4096)
-	
+
 	// Create a node to serialize into the page
 	node := NewNode(42, "Person")
 	node.AddProperty("name", "John Doe")
-	
+
 	// Serialize the node
 	nodeData, err := SerializeNode(node)
 	if err != nil {
 		t.Fatalf("Failed to serialize node: %v", err)
 	}
-	
+
 	// Copy the serialized node data into the page
 	if len(nodeData) > len(page.Data) {
 		t.Fatalf("Serialized node data (%d bytes) exceeds page size (%d bytes)", len(nodeData), len(page.Data))
 	}
-	
+
 	copy(page.Data, nodeData)
-	
+
 	// Mark where the serialized data ends
 	dataLength := len(nodeData)
-	
+
 	// Deserialize the node from the page
 	deserializedEntity, err := DeserializeFromPageBytes(page.Data[:dataLength])
 	if err != nil {
 		t.Fatalf("Failed to deserialize node from page: %v", err)
 	}
-	
+
 	deserializedNode, ok := deserializedEntity.(*Node)
 	if !ok {
 		t.Fatalf("Expected deserialized entity to be *Node, got %T", deserializedEntity)
 	}
-	
+
 	// Verify the deserialized node matches the original
 	if deserializedNode.ID != node.ID {
 		t.Errorf("Expected node ID to be %d, got %d", node.ID, deserializedNode.ID)
 	}
-	
+
 	if deserializedNode.Label != node.Label {
 		t.Errorf("Expected node label to be %s, got %s", node.Label, deserializedNode.Label)
 	}
-	
+
 	name, exists := deserializedNode.GetProperty("name")
 	if !exists {
 		t.Error("Expected property 'name' to exist in deserialized node")

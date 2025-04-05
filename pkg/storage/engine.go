@@ -22,16 +22,16 @@ var (
 type StorageEngine struct {
 	mu               sync.RWMutex
 	config           EngineConfig
-	memTable         *MemTable        // Current MemTable for writes
-	immMemTables     []*MemTable      // Immutable MemTables waiting to be flushed
-	sstables         []*SSTable       // Sorted String Tables (persistent storage)
-	wal              *WAL             // Write-Ahead Log
-	logger           model.Logger     // Logger for storage engine operations
-	compactionCond   *sync.Cond       // Condition variable for signaling compaction
-	compactionDone   chan struct{}    // Channel for signaling compaction is done
-	isOpen           bool             // Whether the storage engine is open
-	nextSSTableID    uint64           // Next SSTable ID to use
-	leveledCompactor *LeveledCompaction // Manages the leveled compaction strategy
+	memTable         *MemTable           // Current MemTable for writes
+	immMemTables     []*MemTable         // Immutable MemTables waiting to be flushed
+	sstables         []*SSTable          // Sorted String Tables (persistent storage)
+	wal              *WAL                // Write-Ahead Log
+	logger           model.Logger        // Logger for storage engine operations
+	compactionCond   *sync.Cond          // Condition variable for signaling compaction
+	compactionDone   chan struct{}       // Channel for signaling compaction is done
+	isOpen           bool                // Whether the storage engine is open
+	nextSSTableID    uint64              // Next SSTable ID to use
+	leveledCompactor *LeveledCompaction  // Manages the leveled compaction strategy
 	txManager        *TransactionManager // Transaction manager for atomic operations
 }
 
@@ -62,13 +62,13 @@ type EngineConfig struct {
 // DefaultEngineConfig returns a default configuration for the storage engine
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		DataDir:             "data",
-		MemTableSize:        32 * 1024 * 1024, // 32MB
-		SyncWrites:          true,
-		Logger:              model.DefaultLoggerInstance,
-		Comparator:          DefaultComparator,
+		DataDir:              "data",
+		MemTableSize:         32 * 1024 * 1024, // 32MB
+		SyncWrites:           true,
+		Logger:               model.DefaultLoggerInstance,
+		Comparator:           DefaultComparator,
 		BackgroundCompaction: true,
-		BloomFilterFPR:      0.01, // 1% false positive rate
+		BloomFilterFPR:       0.01, // 1% false positive rate
 	}
 }
 
@@ -209,7 +209,7 @@ func (e *StorageEngine) Close() error {
 			e.logger.Error("Failed to close SSTable: %v", err)
 		}
 	}
-	
+
 	// Close the transaction manager
 	if e.txManager != nil {
 		if err := e.txManager.Close(); err != nil {
@@ -429,7 +429,7 @@ func (e *StorageEngine) Compact() error {
 		if err := e.compactLevel0(e.leveledCompactor); err != nil {
 			return fmt.Errorf("failed to compact level 0: %w", err)
 		}
-		
+
 		// After level 0 compaction, reallocate levels as level 0 files are now in level 1
 		e.allocateSSTableLevels(e.leveledCompactor)
 	}
@@ -440,7 +440,7 @@ func (e *StorageEngine) Compact() error {
 			if err := e.compactLevel(e.leveledCompactor, level); err != nil {
 				return fmt.Errorf("failed to compact level %d: %w", level, err)
 			}
-			
+
 			// Reallocate levels after each level compaction
 			e.allocateSSTableLevels(e.leveledCompactor)
 		}
@@ -484,7 +484,7 @@ func (e *StorageEngine) Stats() EngineStats {
 	// Calculate level counts and sizes
 	for level := 0; level < e.leveledCompactor.MaxLevels; level++ {
 		levelCounts[level] = len(e.leveledCompactor.Levels[level])
-		
+
 		var levelSize uint64
 		for _, sstable := range e.leveledCompactor.Levels[level] {
 			levelSize += sstable.Size()
@@ -516,7 +516,7 @@ func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 
 	// Begin a transaction for the flush operation
 	tx := e.txManager.Begin()
-	
+
 	// Create a new SSTable from the MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
 	sstConfig := SSTableConfig{
@@ -531,19 +531,19 @@ func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 		tx.Rollback()
 		return fmt.Errorf("failed to create SSTable: %w", err)
 	}
-	
+
 	// Add the 'add' operation to the transaction
 	tx.AddOperation(TransactionOperation{
 		Type:   "add",
 		Target: "sstable",
 		ID:     sstable.ID(),
 	})
-	
+
 	// Prepare in-memory update
 	newSSTables := make([]*SSTable, len(e.sstables)+1)
 	copy(newSSTables, e.sstables)
 	newSSTables[len(newSSTables)-1] = sstable
-	
+
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		// On commit failure, we should close the new SSTable to release resources
@@ -563,7 +563,7 @@ func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 // Caller must hold the lock
 func (e *StorageEngine) loadSSTables() error {
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
-	
+
 	// Check if the directory exists
 	if _, err := os.Stat(sstableDir); os.IsNotExist(err) {
 		return nil // No SSTables yet
@@ -606,7 +606,7 @@ func (e *StorageEngine) loadSSTables() error {
 
 			// Add the SSTable to the list
 			e.sstables = append(e.sstables, sstable)
-			
+
 			// Update the max ID
 			if id > maxID {
 				maxID = id
@@ -630,13 +630,13 @@ func (e *StorageEngine) loadSSTables() error {
 func (e *StorageEngine) compactionLoop() {
 	for {
 		e.mu.Lock()
-		
+
 		// Wait for a signal to compact or for the engine to close
 		for e.isOpen && len(e.immMemTables) == 0 && len(e.sstables) < 2 {
 			// Use timed wait to periodically check for compaction
 			waitChan := make(chan struct{})
 			timer := time.NewTimer(10 * time.Minute)
-			
+
 			go func() {
 				select {
 				case <-timer.C:
@@ -646,9 +646,9 @@ func (e *StorageEngine) compactionLoop() {
 				}
 				close(waitChan)
 			}()
-			
+
 			e.compactionCond.Wait()
-			
+
 			timer.Stop()
 			select {
 			case <-waitChan:
@@ -657,13 +657,13 @@ func (e *StorageEngine) compactionLoop() {
 				// We were woken up by something else
 			}
 		}
-		
+
 		// Check if we should exit
 		if !e.isOpen {
 			e.mu.Unlock()
 			return
 		}
-		
+
 		// Flush immutable MemTables to Level 0 SSTables
 		for _, immMemTable := range e.immMemTables {
 			err := e.flushMemTableLocked(immMemTable)
@@ -672,12 +672,12 @@ func (e *StorageEngine) compactionLoop() {
 			}
 		}
 		e.immMemTables = e.immMemTables[:0]
-		
+
 		// Run compaction on all levels using the leveled compaction strategy
 		if len(e.sstables) >= 2 {
 			// Update the levels in our leveledCompactor
 			e.allocateSSTableLevels(e.leveledCompactor)
-			
+
 			// Check if level 0 needs compaction (too many files)
 			if len(e.leveledCompactor.Levels[0]) >= e.leveledCompactor.Level0Size {
 				err := e.compactLevel0(e.leveledCompactor)
@@ -685,7 +685,7 @@ func (e *StorageEngine) compactionLoop() {
 					e.logger.Error("Failed to compact level 0: %v", err)
 				}
 			}
-			
+
 			// Check other levels for compaction based on size
 			for level := 1; level < e.leveledCompactor.MaxLevels-1; level++ {
 				// Only compact if there are files in this level
@@ -696,13 +696,13 @@ func (e *StorageEngine) compactionLoop() {
 					for i := 0; i < level-1; i++ {
 						targetSize *= uint64(e.leveledCompactor.SizeRatio)
 					}
-					
+
 					// Calculate the current level size
 					var currentLevelSize uint64
 					for _, sstable := range e.leveledCompactor.Levels[level] {
 						currentLevelSize += sstable.Size()
 					}
-					
+
 					// Compact if the level is too large
 					if currentLevelSize > targetSize {
 						err := e.compactLevel(e.leveledCompactor, level)
@@ -713,9 +713,9 @@ func (e *StorageEngine) compactionLoop() {
 				}
 			}
 		}
-		
+
 		e.mu.Unlock()
-		
+
 		// Sleep for a short while to prevent excessive CPU usage
 		time.Sleep(1 * time.Second)
 	}
@@ -732,7 +732,7 @@ type LeveledCompaction struct {
 
 	// Level0Size is the maximum number of files in level 0
 	Level0Size int
-	
+
 	// SizeRatio is the size ratio between adjacent levels (typically 10)
 	// Level L+1 is SizeRatio times larger than level L
 	SizeRatio int
@@ -745,12 +745,12 @@ func NewLeveledCompaction() *LeveledCompaction {
 	for i := 0; i < maxLevels; i++ {
 		levels[i] = make([]*SSTable, 0)
 	}
-	
+
 	return &LeveledCompaction{
 		Levels:     levels,
 		MaxLevels:  maxLevels,
-		Level0Size: 4,      // Max number of SSTables in level 0 before compaction
-		SizeRatio:  10,     // Size ratio between adjacent levels
+		Level0Size: 4,  // Max number of SSTables in level 0 before compaction
+		SizeRatio:  10, // Size ratio between adjacent levels
 	}
 }
 
@@ -763,10 +763,10 @@ func (e *StorageEngine) compactLocked() error {
 
 	// Initialize the leveled compaction if we don't have one yet
 	leveledCompaction := NewLeveledCompaction()
-	
+
 	// Allocate existing SSTables into levels
 	e.allocateSSTableLevels(leveledCompaction)
-	
+
 	// Check if level 0 needs compaction (has too many files)
 	level0Files := leveledCompaction.Levels[0]
 	if len(level0Files) >= leveledCompaction.Level0Size {
@@ -775,7 +775,7 @@ func (e *StorageEngine) compactLocked() error {
 			return fmt.Errorf("failed to compact level 0: %w", err)
 		}
 	}
-	
+
 	// Check and compact other levels as needed
 	for level := 1; level < leveledCompaction.MaxLevels-1; level++ {
 		// Calculate the target size for this level
@@ -785,13 +785,13 @@ func (e *StorageEngine) compactLocked() error {
 		for i := 0; i < level-1; i++ {
 			targetSize *= uint64(leveledCompaction.SizeRatio)
 		}
-		
+
 		// Calculate the current level size
 		var currentLevelSize uint64
 		for _, sstable := range leveledCompaction.Levels[level] {
 			currentLevelSize += sstable.Size()
 		}
-		
+
 		// Compact if the level is too large
 		if currentLevelSize > targetSize {
 			if err := e.compactLevel(leveledCompaction, level); err != nil {
@@ -799,7 +799,7 @@ func (e *StorageEngine) compactLocked() error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -817,21 +817,21 @@ func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 	for i := 0; i < lc.MaxLevels; i++ {
 		lc.Levels[i] = make([]*SSTable, 0)
 	}
-	
+
 	// Sort SSTables by ID (creation time)
 	sort.Slice(e.sstables, func(i, j int) bool {
 		return e.sstables[i].ID() < e.sstables[j].ID()
 	})
-	
+
 	// Simple allocation based on creation time
 	// Newer SSTables go to level 0, older ones to higher levels
 	// In a real implementation, this would be more sophisticated based on key ranges
-	
+
 	// First 4 tables (or all if less than 4) go to level 0
 	level0Count := min(len(e.sstables), lc.Level0Size)
 	startIdx := len(e.sstables) - level0Count
 	lc.Levels[0] = append(lc.Levels[0], e.sstables[startIdx:]...)
-	
+
 	// Remainder get distributed to higher levels
 	// Initially we'll put all older tables in level 1 for simplicity
 	if startIdx > 0 {
@@ -843,14 +843,14 @@ func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	// Log the compaction operation
 	e.logger.Info("Starting compaction of level 0 with %d files", len(lc.Levels[0]))
-	
+
 	// Create a new MemTable to merge level 0 SSTables
 	mergedMemTable := NewMemTable(MemTableConfig{
 		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
 		Logger:     e.logger,
 		Comparator: e.config.Comparator,
 	})
-	
+
 	// Read all key-value pairs from level 0 SSTables (newest to oldest for correct overwrite semantics)
 	// Level 0 has overlapping key ranges, so we need to process newer files first
 	for i := len(lc.Levels[0]) - 1; i >= 0; i-- {
@@ -860,26 +860,26 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
-		
+
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
 			value := iter.Value()
-			
+
 			// Add to merged MemTable (newer values will overwrite older ones)
 			if err := mergedMemTable.Put(key, value); err != nil {
 				e.logger.Error("Failed to add key-value pair to merged MemTable: %v", err)
 			}
-			
+
 			if err := iter.Next(); err != nil {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
 		}
-		
+
 		iter.Close()
 	}
-	
+
 	// Now merge with any overlapping files from level 1
 	// In level 1, files should have non-overlapping key ranges, but during the initial
 	// implementation we'll just merge all level 1 files for simplicity
@@ -889,7 +889,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
-		
+
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
@@ -901,19 +901,19 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 					e.logger.Error("Failed to add key-value pair from level 1 to merged MemTable: %v", err)
 				}
 			}
-			
+
 			if err := iter.Next(); err != nil {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
 		}
-		
+
 		iter.Close()
 	}
 
 	// Begin a transaction for the compaction operation
 	tx := e.txManager.Begin()
-	
+
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
 	sstConfig := SSTableConfig{
@@ -922,20 +922,20 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		Logger:     e.logger,
 		Comparator: e.config.Comparator,
 	}
-	
+
 	mergedSSTable, err := CreateSSTable(sstConfig, mergedMemTable)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to create merged SSTable: %w", err)
 	}
-	
+
 	// Add the 'add' operation to the transaction
 	tx.AddOperation(TransactionOperation{
 		Type:   "add",
 		Target: "sstable",
 		ID:     mergedSSTable.ID(),
 	})
-	
+
 	// Add 'remove' operations for all SSTables that will be removed
 	allSSTablesToRemove := append(lc.Levels[0], lc.Levels[1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
@@ -947,9 +947,9 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 			ID:     sstable.ID(),
 		})
 	}
-	
+
 	// Update the in-memory state (this happens before commit to ensure consistency)
-	newSSTables := make([]*SSTable, 0, len(e.sstables) - len(allSSTablesToRemove) + 1)
+	newSSTables := make([]*SSTable, 0, len(e.sstables)-len(allSSTablesToRemove)+1)
 	for _, sstable := range e.sstables {
 		isInCompactedLevels := false
 		for _, oldSSTable := range allSSTablesToRemove {
@@ -962,27 +962,27 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 			newSSTables = append(newSSTables, sstable)
 		}
 	}
-	
+
 	// Add the new SSTable to our in-memory list
 	newSSTables = append(newSSTables, mergedSSTable)
-	
+
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		// On commit failure, we should close the new SSTable to release resources
 		mergedSSTable.Close()
 		return fmt.Errorf("failed to commit compaction transaction: %w", err)
 	}
-	
+
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
-	
+
 	// Close old SSTables since they've been removed
 	for _, sstable := range allSSTablesToRemove {
 		sstable.Close()
 	}
-	
-	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys", 
+
+	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys",
 		len(oldIDs), oldIDs, mergedSSTable.ID(), mergedSSTable.KeyCount())
 	return nil
 }
@@ -992,20 +992,20 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 	if level <= 0 || level >= lc.MaxLevels-1 {
 		return fmt.Errorf("invalid level for compaction: %d", level)
 	}
-	
+
 	// In a full implementation, we would select a subset of SSTables in this level
 	// that have overlapping key ranges with the next level
 	// For simplicity, we'll just compact all files in this level with all files in the next level
-	
+
 	e.logger.Info("Starting compaction of level %d with %d files", level, len(lc.Levels[level]))
-	
+
 	// Create a new MemTable to merge SSTables
 	mergedMemTable := NewMemTable(MemTableConfig{
 		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
 		Logger:     e.logger,
 		Comparator: e.config.Comparator,
 	})
-	
+
 	// First read all key-value pairs from the current level
 	for _, sstable := range lc.Levels[level] {
 		iter, err := sstable.Iterator()
@@ -1013,26 +1013,26 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
-		
+
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
 			value := iter.Value()
-			
+
 			// Add to merged MemTable
 			if err := mergedMemTable.Put(key, value); err != nil {
 				e.logger.Error("Failed to add key-value pair to merged MemTable: %v", err)
 			}
-			
+
 			if err := iter.Next(); err != nil {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
 		}
-		
+
 		iter.Close()
 	}
-	
+
 	// Now merge with any overlapping files from the next level
 	for _, sstable := range lc.Levels[level+1] {
 		iter, err := sstable.Iterator()
@@ -1040,7 +1040,7 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
-		
+
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
@@ -1052,19 +1052,19 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 					e.logger.Error("Failed to add key-value pair from level %d to merged MemTable: %v", level+1, err)
 				}
 			}
-			
+
 			if err := iter.Next(); err != nil {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
 		}
-		
+
 		iter.Close()
 	}
-	
+
 	// Begin a transaction for the compaction operation
 	tx := e.txManager.Begin()
-	
+
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
 	sstConfig := SSTableConfig{
@@ -1073,20 +1073,20 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 		Logger:     e.logger,
 		Comparator: e.config.Comparator,
 	}
-	
+
 	mergedSSTable, err := CreateSSTable(sstConfig, mergedMemTable)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to create merged SSTable: %w", err)
 	}
-	
+
 	// Add the 'add' operation to the transaction
 	tx.AddOperation(TransactionOperation{
 		Type:   "add",
 		Target: "sstable",
 		ID:     mergedSSTable.ID(),
 	})
-	
+
 	// Add 'remove' operations for all SSTables that will be removed
 	allSSTablesToRemove := append(lc.Levels[level], lc.Levels[level+1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
@@ -1098,9 +1098,9 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 			ID:     sstable.ID(),
 		})
 	}
-	
+
 	// Update the in-memory state (prepare the new state)
-	newSSTables := make([]*SSTable, 0, len(e.sstables) - len(allSSTablesToRemove) + 1)
+	newSSTables := make([]*SSTable, 0, len(e.sstables)-len(allSSTablesToRemove)+1)
 	for _, sstable := range e.sstables {
 		isInCompactedLevels := false
 		for _, oldSSTable := range allSSTablesToRemove {
@@ -1113,30 +1113,30 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 			newSSTables = append(newSSTables, sstable)
 		}
 	}
-	
+
 	// Add the new SSTable to our in-memory list
 	newSSTables = append(newSSTables, mergedSSTable)
-	
+
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		// On commit failure, we should close the new SSTable to release resources
 		mergedSSTable.Close()
 		return fmt.Errorf("failed to commit compaction transaction: %w", err)
 	}
-	
+
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
-	
+
 	// Close old SSTables since they've been removed
 	for _, sstable := range allSSTablesToRemove {
 		sstable.Close()
 	}
-	
+
 	// In a full implementation, we might want to check if the resulting compaction
 	// makes the next level too large, and trigger another compaction if needed
-	
-	e.logger.Info("Compacted %d SSTables from levels %d and %d (IDs: %v) into new SSTable %d with %d keys", 
+
+	e.logger.Info("Compacted %d SSTables from levels %d and %d (IDs: %v) into new SSTable %d with %d keys",
 		len(oldIDs), level, level+1, oldIDs, mergedSSTable.ID(), mergedSSTable.KeyCount())
 	return nil
 }
@@ -1145,7 +1145,7 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 // Caller must hold the lock
 func (e *StorageEngine) getDataDirectorySizeLocked() int64 {
 	var totalSize int64
-	
+
 	// Walk through all files in the data directory
 	filepath.Walk(e.config.DataDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1156,7 +1156,7 @@ func (e *StorageEngine) getDataDirectorySizeLocked() int64 {
 		}
 		return nil
 	})
-	
+
 	return totalSize
 }
 

@@ -154,7 +154,7 @@ func BenchmarkEngineCompaction(b *testing.B) {
 			// Use a pattern that ensures some key overlap between SSTables
 			// to test compaction's deduplication
 			var key []byte
-			if j % 2 == 0 {
+			if j%2 == 0 {
 				// Half the keys are unique per SSTable
 				key = []byte(fmt.Sprintf("key-%d-%d", i, j))
 			} else {
@@ -416,7 +416,7 @@ func BenchmarkEngineMixedWorkload(b *testing.B) {
 
 	// Pre-generate keys for writes to avoid string formatting during benchmark
 	// Allocate enough for maximum operations per iteration (25% of operations are writes)
-	maxWrites := opsPerIteration / 4 + 1
+	maxWrites := opsPerIteration/4 + 1
 	writeKeys := make([][]byte, maxWrites)
 	writeValues := make([][]byte, maxWrites)
 

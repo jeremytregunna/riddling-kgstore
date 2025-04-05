@@ -27,7 +27,7 @@ func TestSSTableCreationAndRetrieval(t *testing.T) {
 	// Test Put and Get with small keys and values to avoid size issues
 	testData := map[string]string{
 		"a": "v1",
-		"b": "v2", 
+		"b": "v2",
 		"c": "v3",
 		"d": "v4",
 		"e": "v5",

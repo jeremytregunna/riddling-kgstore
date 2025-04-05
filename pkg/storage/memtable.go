@@ -62,16 +62,16 @@ type skipNode struct {
 // This implementation offers O(log n) insertion and lookup complexity
 type MemTable struct {
 	mu             sync.RWMutex
-	head           *skipNode     // Pointer to the head (sentinel) node
-	maxHeight      int           // Maximum height of skip list nodes
-	currentHeight  int           // Current height of the skip list
-	size           uint64        // Total size in bytes
-	count          int           // Number of entries
-	maxSize        uint64        // Maximum size in bytes
-	isFlushed      bool          // Whether the MemTable has been flushed
-	logger         model.Logger  // Logger for operations
-	comparator     Comparator    // Function for comparing keys
-	currentVersion uint64        // Version counter for tracking changes
+	head           *skipNode    // Pointer to the head (sentinel) node
+	maxHeight      int          // Maximum height of skip list nodes
+	currentHeight  int          // Current height of the skip list
+	size           uint64       // Total size in bytes
+	count          int          // Number of entries
+	maxSize        uint64       // Maximum size in bytes
+	isFlushed      bool         // Whether the MemTable has been flushed
+	logger         model.Logger // Logger for operations
+	comparator     Comparator   // Function for comparing keys
+	currentVersion uint64       // Version counter for tracking changes
 }
 
 // NewMemTable creates a new empty MemTable using a skip list data structure
@@ -109,7 +109,7 @@ func NewMemTable(config MemTableConfig) *MemTable {
 }
 
 // randomHeight generates a random height for a new node
-// Uses a probabilistic distribution to ensure ~1/4 nodes have height 1, 
+// Uses a probabilistic distribution to ensure ~1/4 nodes have height 1,
 // ~1/16 have height 2, etc.
 func (m *MemTable) randomHeight() int {
 	const probability = 0.25 // Probability to increase height
@@ -166,7 +166,7 @@ func (m *MemTable) Put(key, value []byte) error {
 	}
 
 	entrySize := uint64(len(key) + len(value))
-	
+
 	// Find the node and its predecessors at each level
 	node, prevs := m.findNodeAndPrevs(key)
 
@@ -180,7 +180,7 @@ func (m *MemTable) Put(key, value []byte) error {
 			oldSize := node.size
 			node.size = entrySize
 			m.size = m.size - oldSize + entrySize
-			m.count++  // Increment count since we're reusing a previously deleted node
+			m.count++ // Increment count since we're reusing a previously deleted node
 			m.currentVersion++
 			m.logger.Debug("Reactivated deleted entry in MemTable, key size: %d, value size: %d", len(key), len(value))
 			return nil
@@ -189,10 +189,10 @@ func (m *MemTable) Put(key, value []byte) error {
 		// Normal update case
 		oldSize := node.size
 		// Check if the new size exceeds max size
-		if m.size - oldSize + entrySize > m.maxSize {
+		if m.size-oldSize+entrySize > m.maxSize {
 			return ErrMemTableFull
 		}
-		
+
 		// Update the value and size
 		node.value = append([]byte{}, value...) // Create a copy
 		node.size = entrySize
@@ -234,7 +234,7 @@ func (m *MemTable) Put(key, value []byte) error {
 	m.size += entrySize
 	m.count++
 	m.currentVersion++
-	
+
 	m.logger.Debug("Added new entry to MemTable, key size: %d, value size: %d", len(key), len(value))
 	return nil
 }
@@ -284,7 +284,7 @@ func (m *MemTable) Delete(key []byte) error {
 	m.size -= node.size
 	m.count--
 	m.currentVersion++
-	
+
 	m.logger.Debug("Deleted entry from MemTable with key size: %d", len(key))
 	return nil
 }
@@ -307,7 +307,7 @@ func (m *MemTable) Contains(key []byte) bool {
 func (m *MemTable) Size() uint64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return m.size
 }
 
@@ -320,7 +320,7 @@ func (m *MemTable) MaxSize() uint64 {
 func (m *MemTable) EntryCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return m.count
 }
 
@@ -328,7 +328,7 @@ func (m *MemTable) EntryCount() int {
 func (m *MemTable) IsFull() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return m.size >= m.maxSize
 }
 
@@ -337,7 +337,7 @@ func (m *MemTable) IsFull() bool {
 func (m *MemTable) MarkFlushed() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.isFlushed = true
 	m.logger.Info("MemTable marked as flushed with %d entries and %d bytes", m.count, m.size)
 }
@@ -346,7 +346,7 @@ func (m *MemTable) MarkFlushed() {
 func (m *MemTable) IsFlushed() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return m.isFlushed
 }
 
@@ -355,10 +355,10 @@ func (m *MemTable) IsFlushed() bool {
 func (m *MemTable) GetEntries() [][]byte {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Create a slice to hold key-value pairs (2 entries per key-value pair)
 	entries := make([][]byte, 0, m.count*2)
-	
+
 	// Traverse the skip list at level 0 (which contains all nodes)
 	current := m.head.forward[0]
 	for current != nil {
@@ -369,7 +369,7 @@ func (m *MemTable) GetEntries() [][]byte {
 		}
 		current = current.forward[0]
 	}
-	
+
 	return entries
 }
 
@@ -378,7 +378,7 @@ func (m *MemTable) GetEntries() [][]byte {
 func (m *MemTable) GetVersion() uint64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return m.currentVersion
 }
 
@@ -386,18 +386,18 @@ func (m *MemTable) GetVersion() uint64 {
 func (m *MemTable) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Reset the skip list
 	head := &skipNode{
 		forward: make([]*skipNode, m.maxHeight),
 	}
-	
+
 	m.head = head
 	m.currentHeight = 1
 	m.size = 0
 	m.count = 0
 	m.isFlushed = false
 	m.currentVersion++
-	
+
 	m.logger.Info("MemTable cleared")
 }

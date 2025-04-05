@@ -19,13 +19,13 @@ func TestNodePrimaryIndex(t *testing.T) {
 
 	// Create a storage engine
 	config := EngineConfig{
-		DataDir:             dbDir,
-		MemTableSize:        4096,
-		SyncWrites:          true,
-		Logger:              model.NewNoOpLogger(),
-		Comparator:          DefaultComparator,
+		DataDir:              dbDir,
+		MemTableSize:         4096,
+		SyncWrites:           true,
+		Logger:               model.NewNoOpLogger(),
+		Comparator:           DefaultComparator,
 		BackgroundCompaction: false,
-		BloomFilterFPR:      0.01,
+		BloomFilterFPR:       0.01,
 	}
 
 	engine, err := NewStorageEngine(config)
@@ -161,13 +161,13 @@ func TestNodeLabelIndex(t *testing.T) {
 
 	// Create a storage engine
 	config := EngineConfig{
-		DataDir:             dbDir,
-		MemTableSize:        4096,
-		SyncWrites:          true,
-		Logger:              model.NewNoOpLogger(),
-		Comparator:          DefaultComparator,
+		DataDir:              dbDir,
+		MemTableSize:         4096,
+		SyncWrites:           true,
+		Logger:               model.NewNoOpLogger(),
+		Comparator:           DefaultComparator,
 		BackgroundCompaction: false,
-		BloomFilterFPR:      0.01,
+		BloomFilterFPR:       0.01,
 	}
 
 	engine, err := NewStorageEngine(config)
@@ -309,13 +309,13 @@ func TestEdgeLabelIndex(t *testing.T) {
 
 	// Create a storage engine
 	config := EngineConfig{
-		DataDir:             dbDir,
-		MemTableSize:        4096,
-		SyncWrites:          true,
-		Logger:              model.NewNoOpLogger(),
-		Comparator:          DefaultComparator,
+		DataDir:              dbDir,
+		MemTableSize:         4096,
+		SyncWrites:           true,
+		Logger:               model.NewNoOpLogger(),
+		Comparator:           DefaultComparator,
 		BackgroundCompaction: false,
-		BloomFilterFPR:      0.01,
+		BloomFilterFPR:       0.01,
 	}
 
 	engine, err := NewStorageEngine(config)

@@ -16,7 +16,7 @@ func NewEngine(storageEngine *storage.StorageEngine, nodeIndex, edgeIndex, nodeL
 	executor := NewExecutor(storageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
 	optimizer := NewOptimizer()
 	traversal := NewTraversal(storageEngine, nodeIndex, edgeIndex)
-	
+
 	return &Engine{
 		Executor:  executor,
 		Optimizer: optimizer,
@@ -31,7 +31,7 @@ func (e *Engine) Execute(queryStr string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Execute the query
 	return e.Executor.Execute(query)
 }
@@ -44,7 +44,7 @@ func (e *Engine) FindNodesByLabel(label string) (*Result, error) {
 			ParamLabel: label,
 		},
 	}
-	
+
 	return e.Executor.Execute(query)
 }
 
@@ -56,7 +56,7 @@ func (e *Engine) FindEdgesByLabel(label string) (*Result, error) {
 			ParamLabel: label,
 		},
 	}
-	
+
 	return e.Executor.Execute(query)
 }
 
@@ -69,7 +69,7 @@ func (e *Engine) FindNeighbors(nodeID uint64, direction string) (*Result, error)
 			ParamDirection: direction,
 		},
 	}
-	
+
 	return e.Executor.Execute(query)
 }
 
@@ -83,7 +83,7 @@ func (e *Engine) FindPath(sourceID, targetID uint64, maxHops int) (*Result, erro
 			ParamMaxHops:  convertIntToString(maxHops),
 		},
 	}
-	
+
 	return e.Executor.Execute(query)
 }
 

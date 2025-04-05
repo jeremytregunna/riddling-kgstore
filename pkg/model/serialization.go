@@ -408,7 +408,7 @@ func DeserializeFromPageBytes(data []byte) (interface{}, error) {
 
 	// Read entity type without consuming the data
 	buf := bytes.NewReader(data)
-	
+
 	// Skip magic and version
 	if _, err := buf.Seek(6, io.SeekStart); err != nil {
 		return nil, err
@@ -457,7 +457,7 @@ func Serialize(data interface{}) ([]byte, error) {
 		if err := binary.Write(&buf, binary.LittleEndian, SerializationVersion); err != nil {
 			return nil, err
 		}
-		
+
 		// Use gob encoding for generic types
 		enc := gob.NewEncoder(&buf)
 		if err := enc.Encode(v); err != nil {
@@ -474,26 +474,26 @@ func Deserialize(data []byte, out interface{}) error {
 	if len(data) < 6 { // Magic(4) + Version(2)
 		return ErrInvalidSerializedData
 	}
-	
+
 	// Read and validate magic and version
 	buf := bytes.NewReader(data)
 	var magic uint32
 	var version uint16
-	
+
 	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
 		return err
 	}
 	if magic != SerializationMagic {
 		return ErrInvalidSerializedData
 	}
-	
+
 	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
 		return err
 	}
 	if version != SerializationVersion {
 		return ErrUnsupportedVersion
 	}
-	
+
 	// Handle different types based on the output parameter
 	switch out := out.(type) {
 	case *Node:

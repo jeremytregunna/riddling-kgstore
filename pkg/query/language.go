@@ -11,10 +11,10 @@ import (
 type QueryType string
 
 const (
-	QueryTypeFindNodesByLabel  QueryType = "FIND_NODES_BY_LABEL"
-	QueryTypeFindEdgesByLabel  QueryType = "FIND_EDGES_BY_LABEL"
-	QueryTypeFindNeighbors     QueryType = "FIND_NEIGHBORS"
-	QueryTypeFindPath          QueryType = "FIND_PATH"
+	QueryTypeFindNodesByLabel QueryType = "FIND_NODES_BY_LABEL"
+	QueryTypeFindEdgesByLabel QueryType = "FIND_EDGES_BY_LABEL"
+	QueryTypeFindNeighbors    QueryType = "FIND_NEIGHBORS"
+	QueryTypeFindPath         QueryType = "FIND_PATH"
 )
 
 // Query represents a parsed query
@@ -25,12 +25,12 @@ type Query struct {
 
 // Parameter keys
 const (
-	ParamLabel      = "label"
-	ParamNodeID     = "nodeId"
-	ParamDirection  = "direction"
-	ParamMaxHops    = "maxHops"
-	ParamSourceID   = "sourceId"
-	ParamTargetID   = "targetId"
+	ParamLabel     = "label"
+	ParamNodeID    = "nodeId"
+	ParamDirection = "direction"
+	ParamMaxHops   = "maxHops"
+	ParamSourceID  = "sourceId"
+	ParamTargetID  = "targetId"
 )
 
 // Direction types for traversal
@@ -137,7 +137,7 @@ func validateQueryParameters(query *Query) error {
 		if _, ok := query.Parameters[ParamNodeID]; !ok {
 			return fmt.Errorf("%w: missing required parameter 'nodeId'", ErrInvalidQuery)
 		}
-		
+
 		// Direction is optional, defaults to "both"
 		if dir, ok := query.Parameters[ParamDirection]; ok {
 			if dir != DirectionOutgoing && dir != DirectionIncoming && dir != DirectionBoth {
@@ -162,7 +162,7 @@ func (q *Query) String() string {
 	var sb strings.Builder
 	sb.WriteString(string(q.Type))
 	sb.WriteString("(")
-	
+
 	paramCount := 0
 	for k, v := range q.Parameters {
 		if paramCount > 0 {
@@ -174,7 +174,7 @@ func (q *Query) String() string {
 		sb.WriteString("\"")
 		paramCount++
 	}
-	
+
 	sb.WriteString(")")
 	return sb.String()
 }

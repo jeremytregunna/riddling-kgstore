@@ -9,7 +9,7 @@ import (
 type Optimizer struct {
 	// Configuration options for optimization
 	EnablePathLengthLimit bool
-	DefaultMaxHops       int
+	DefaultMaxHops        int
 }
 
 // NewOptimizer creates a new query optimizer

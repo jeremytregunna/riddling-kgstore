@@ -49,7 +49,6 @@ func (e ErrPropertyNotFound) Error() string {
 	return fmt.Sprintf("property not found for key: %s", e.Key)
 }
 
-
 // ErrPageDataSizeExceeded is returned when attempting to write data that exceeds the page size
 type ErrPageDataSizeExceeded struct {
 	DataSize int

@@ -23,7 +23,7 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 		DataDir: filepath.Join(tempDir, "db"),
 		Logger:  model.DefaultLoggerInstance,
 	}
-	
+
 	engine, err := storage.NewStorageEngine(config)
 	if err != nil {
 		os.RemoveAll(tempDir)
@@ -74,7 +74,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 
 	// Create maps to collect all nodes by label
 	nodesByLabel := make(map[string][]uint64)
-	
+
 	// First pass: collect all nodes by label
 	for _, node := range nodes {
 		nodesByLabel[node.Label] = append(nodesByLabel[node.Label], node.ID)
@@ -94,7 +94,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 			t.Fatalf("Failed to add node to index: %v", err)
 		}
 	}
-	
+
 	// Add node labels to the label index
 	for label, nodeIDs := range nodesByLabel {
 		// Serialize the node IDs
@@ -102,7 +102,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to serialize node IDs for label %s: %v", label, err)
 		}
-		
+
 		// Add to node label index
 		err = nodeLabels.Put([]byte(label), nodeIDsBytes)
 		if err != nil {
@@ -124,21 +124,21 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 	edgesByLabel := make(map[string][]string)
 	outgoingByNode := make(map[uint64][]string)
 	incomingByNode := make(map[uint64][]string)
-	
-	// Add edges to the edge index 
+
+	// Add edges to the edge index
 	for _, edge := range edges {
 		// Create edge ID from source and target
 		edgeID := fmt.Sprintf("%d-%d", edge.SourceID, edge.TargetID)
-		
+
 		// Collect by label
 		edgesByLabel[edge.Label] = append(edgesByLabel[edge.Label], edgeID)
-		
+
 		// Collect by source (outgoing)
 		outgoingByNode[edge.SourceID] = append(outgoingByNode[edge.SourceID], edgeID)
-		
+
 		// Collect by target (incoming)
 		incomingByNode[edge.TargetID] = append(incomingByNode[edge.TargetID], edgeID)
-		
+
 		// Serialize the edge
 		edgeBytes, err := model.Serialize(edge)
 		if err != nil {
@@ -151,7 +151,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 			t.Fatalf("Failed to add edge to index: %v", err)
 		}
 	}
-	
+
 	// Add edge labels to the label index
 	for label, edgeIDs := range edgesByLabel {
 		// Serialize the edge IDs
@@ -159,14 +159,14 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to serialize edge IDs for label %s: %v", label, err)
 		}
-		
+
 		// Add to edge label index
 		err = edgeLabels.Put([]byte(label), edgeIDsBytes)
 		if err != nil {
 			t.Fatalf("Failed to add edge label index entry for label %s: %v", label, err)
 		}
 	}
-	
+
 	// Add outgoing edges to the outgoing index
 	for nodeID, edgeIDs := range outgoingByNode {
 		// Serialize the edge IDs
@@ -174,7 +174,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to serialize outgoing edge IDs for node %d: %v", nodeID, err)
 		}
-		
+
 		// Add to outgoing index
 		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
 		err = edgeIndex.Put(outKey, edgeIDsBytes)
@@ -182,7 +182,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 			t.Fatalf("Failed to add outgoing edges index entry for node %d: %v", nodeID, err)
 		}
 	}
-	
+
 	// Add incoming edges to the incoming index
 	for nodeID, edgeIDs := range incomingByNode {
 		// Serialize the edge IDs
@@ -190,7 +190,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to serialize incoming edge IDs for node %d: %v", nodeID, err)
 		}
-		
+
 		// Add to incoming index
 		inKey := []byte(FormatIncomingEdgesKey(nodeID))
 		err = edgeIndex.Put(inKey, edgeIDsBytes)
@@ -220,9 +220,9 @@ func TestExecutor_Execute(t *testing.T) {
 
 	// Test cases
 	tests := []struct {
-		name    string
-		query   *Query
-		wantErr bool
+		name     string
+		query    *Query
+		wantErr  bool
 		validate func(*Result, *testing.T)
 	}{
 		{
@@ -456,7 +456,7 @@ func TestExecutor_Execute(t *testing.T) {
 				t.Errorf("Executor.Execute() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			
+
 			if !tt.wantErr && result != nil {
 				tt.validate(result, t)
 			}
@@ -531,7 +531,7 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 				t.Errorf("QueryEngine.Execute() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			
+
 			if !tt.wantErr && result != nil {
 				tt.validate(result, t)
 			}

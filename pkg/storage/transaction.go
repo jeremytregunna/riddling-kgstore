@@ -16,10 +16,10 @@ import (
 
 // TransactionOperation represents an operation within a transaction
 type TransactionOperation struct {
-	Type      string      // Type of operation (e.g., "add", "remove")
-	Target    string      // Target of the operation (e.g., "sstable")
-	ID        uint64      // ID of the target
-	Data      interface{} // Additional data for the operation
+	Type   string      // Type of operation (e.g., "add", "remove")
+	Target string      // Target of the operation (e.g., "sstable")
+	ID     uint64      // ID of the target
+	Data   interface{} // Additional data for the operation
 }
 
 // Transaction represents a set of operations that should be executed atomically
@@ -33,13 +33,13 @@ type Transaction struct {
 
 // TransactionManager handles the creation, committing, and recovery of transactions
 type TransactionManager struct {
-	dataDir         string
-	transactionDir  string
-	logger          model.Logger
-	mu              sync.RWMutex
-	nextTxID        uint64
+	dataDir            string
+	transactionDir     string
+	logger             model.Logger
+	mu                 sync.RWMutex
+	nextTxID           uint64
 	activeTransactions map[uint64]*Transaction
-	isOpen          bool // Whether the transaction manager is open
+	isOpen             bool // Whether the transaction manager is open
 }
 
 // NewTransactionManager creates a new transaction manager
@@ -311,12 +311,12 @@ func (tm *TransactionManager) removeSSTableFiles(id uint64) {
 // renameSSTableFiles renames SSTable files from tempID to finalID
 func (tm *TransactionManager) renameSSTableFiles(tempID, finalID uint64) {
 	sstableDir := filepath.Join(tm.dataDir, "sstables")
-	
+
 	// Source files
 	tempDataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", tempID))
 	tempIndexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", tempID))
 	tempFilterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", tempID))
-	
+
 	// Destination files
 	finalDataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", finalID))
 	finalIndexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", finalID))
@@ -363,7 +363,7 @@ func (tx *Transaction) Commit() error {
 	if err != nil {
 		return fmt.Errorf("failed to create transaction file: %w", err)
 	}
-	
+
 	// Write operations to log file
 	for _, op := range tx.operations {
 		var line string
@@ -398,10 +398,10 @@ func (tx *Transaction) Commit() error {
 	if err != nil {
 		return fmt.Errorf("failed to create commit marker: %w", err)
 	}
-	
+
 	// Write commit timestamp
 	fmt.Fprintf(commitFile, "%d", time.Now().UnixNano())
-	
+
 	if err := commitFile.Sync(); err != nil {
 		commitFile.Close()
 		return fmt.Errorf("failed to sync commit marker: %w", err)

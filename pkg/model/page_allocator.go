@@ -26,14 +26,14 @@ var (
 
 // PageAllocator manages the allocation and deallocation of pages
 type PageAllocator struct {
-	pageSize      int              // Size of each page in bytes
-	maxPages      uint64           // Maximum number of pages that can be allocated
-	allocatedMap  map[uint64]bool  // Map of allocated page IDs
-	freeList      []uint64         // List of available page IDs
-	nextPageID    uint64           // Next page ID to allocate if free list is empty
-	pages         map[uint64]*Page // Cache of allocated pages
-	mu            sync.RWMutex     // Mutex for thread safety
-	logger        Logger           // Logger for allocation/deallocation events
+	pageSize     int              // Size of each page in bytes
+	maxPages     uint64           // Maximum number of pages that can be allocated
+	allocatedMap map[uint64]bool  // Map of allocated page IDs
+	freeList     []uint64         // List of available page IDs
+	nextPageID   uint64           // Next page ID to allocate if free list is empty
+	pages        map[uint64]*Page // Cache of allocated pages
+	mu           sync.RWMutex     // Mutex for thread safety
+	logger       Logger           // Logger for allocation/deallocation events
 }
 
 // NewPageAllocator creates a new PageAllocator with specified page size and maximum pages

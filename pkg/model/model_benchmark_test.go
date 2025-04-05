@@ -62,7 +62,7 @@ func BenchmarkNodeSerialization(b *testing.B) {
 	node := NewNode(42, "Person")
 	node.AddProperty("name", "John Doe")
 	node.AddProperty("age", "30")
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = SerializeNode(node)
@@ -74,9 +74,9 @@ func BenchmarkNodeDeserialization(b *testing.B) {
 	node := NewNode(42, "Person")
 	node.AddProperty("name", "John Doe")
 	node.AddProperty("age", "30")
-	
+
 	data, _ := SerializeNode(node)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = DeserializeNode(data)
@@ -88,7 +88,7 @@ func BenchmarkWriteEntityToPage(b *testing.B) {
 	page := NewPage(1, 4096)
 	node := NewNode(42, "Person")
 	node.AddProperty("name", "John Doe")
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		page.ClearDirty() // Reset dirty flag
@@ -101,9 +101,9 @@ func BenchmarkReadEntityFromPage(b *testing.B) {
 	page := NewPage(1, 4096)
 	node := NewNode(42, "Person")
 	node.AddProperty("name", "John Doe")
-	
+
 	WriteEntityToPage(page, node, 0)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _, _ = ReadEntityFromPage(page, 0)

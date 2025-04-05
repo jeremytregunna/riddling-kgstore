@@ -79,7 +79,7 @@ func (e *Executor) Execute(query *Query) (*Result, error) {
 // executeNodesByLabel finds nodes by label
 func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
-	
+
 	// Get node IDs for the label
 	key := []byte(label)
 	nodeIDsBytes, err := e.NodeLabels.Get(key)
@@ -125,7 +125,7 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 // executeEdgesByLabel finds edges by label
 func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
-	
+
 	// Get edge IDs for the label
 	key := []byte(label)
 	edgeIDsBytes, err := e.EdgeLabels.Get(key)
@@ -206,7 +206,7 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", nodeID, err)
 		}
-		
+
 		if err == nil {
 			var outEdgeIDs []string
 			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
@@ -224,7 +224,7 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting incoming edges for node %d: %w", nodeID, err)
 		}
-		
+
 		if err == nil {
 			var inEdgeIDs []string
 			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
@@ -238,7 +238,7 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 	// Get the edges
 	edges := make([]model.Edge, 0, len(edgeIDs))
 	nodeIDs := make(map[uint64]bool) // Unique neighbor IDs
-	
+
 	for _, id := range edgeIDs {
 		edgeKey := []byte(fmt.Sprintf("edge:%s", id))
 		edgeBytes, err := e.EdgeIndex.Get(edgeKey)
@@ -256,7 +256,7 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 		}
 
 		edges = append(edges, edge)
-		
+
 		// Add neighbor node ID
 		if edge.SourceID == nodeID {
 			nodeIDs[edge.TargetID] = true
@@ -395,7 +395,7 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	// BFS
 	for i := 0; i < maxHops && len(queue) > 0 && !found; i++ {
 		levelSize := len(queue)
-		
+
 		for j := 0; j < levelSize; j++ {
 			currentID := queue[0]
 			queue = queue[1:]
@@ -406,7 +406,7 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 			if err != nil && err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", currentID, err)
 			}
-			
+
 			if err == nil {
 				var outEdgeIDs []string
 				err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
@@ -467,7 +467,7 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 			if err != nil && err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting incoming edges for node %d: %w", currentID, err)
 			}
-			
+
 			if err == nil {
 				var inEdgeIDs []string
 				err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)

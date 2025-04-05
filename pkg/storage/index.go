@@ -27,7 +27,7 @@ const (
 
 	// Secondary index for Edge Label -> List of Edge IDs
 	IndexTypeEdgeLabel IndexType = 3
-	
+
 	// Primary index for Edge ID -> Edge data
 	IndexTypeEdgePrimary IndexType = 4
 )

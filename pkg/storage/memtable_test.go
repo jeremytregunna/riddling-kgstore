@@ -262,7 +262,7 @@ func TestMemTableSizeLimit(t *testing.T) {
 	// Check IsFull when we're close to the limit
 	closeKey := []byte("close")
 	// Make a value that will fit within the remaining space (leaving 10 bytes)
-	closeVal := make([]byte, int(remainingSpace) - len(closeKey) - 10)
+	closeVal := make([]byte, int(remainingSpace)-len(closeKey)-10)
 
 	err = memTable.Put(closeKey, closeVal)
 	if err != nil {
@@ -285,7 +285,7 @@ func TestMemTableSizeLimit(t *testing.T) {
 	}
 
 	// Check if MemTable is full based on its current size
-	if !(memTable.Size() >= memTable.MaxSize() * 9 / 10) {
+	if !(memTable.Size() >= memTable.MaxSize()*9/10) {
 		t.Error("MemTable should be at least 90% full now")
 	}
 }
@@ -552,7 +552,7 @@ func BenchmarkMemTableContains(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Mix of existing and non-existing keys
-		exists := i % 2 == 0
+		exists := i%2 == 0
 		var key []byte
 		if exists {
 			idx := i % keyCount

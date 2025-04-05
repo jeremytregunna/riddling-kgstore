@@ -114,7 +114,7 @@ func BenchmarkSSTableRead(b *testing.B) {
 		// Pick a key that exists
 		idx := i % keyCount
 		key := keys[idx]
-		
+
 		// We don't assert on the error since we've already checked that reads work
 		val, err := sstable.Get(key)
 		if err != nil {
@@ -166,12 +166,12 @@ func BenchmarkSSTableIteration(b *testing.B) {
 	if err != nil {
 		b.Skipf("SSTable iterator creation has issues: %v", err)
 	}
-	
+
 	// Test if we can get the first valid entry
 	if !testIter.Valid() {
 		b.Skip("SSTable iterator initialization has issues - no valid entries")
 	}
-	
+
 	// Test iterator traversal with a single item
 	err = testIter.Next()
 	if err != nil {
@@ -180,14 +180,14 @@ func BenchmarkSSTableIteration(b *testing.B) {
 	testIter.Close()
 
 	b.ResetTimer()
-	
+
 	// Measure the cost of a full iteration (creation + traversal)
 	for i := 0; i < b.N; i++ {
 		iterCount := 0
-		
+
 		// Create a new iterator for each run
 		iter, _ := sstable.Iterator()
-		
+
 		// Count the number of entries we can read successfully
 		for iter.Valid() {
 			iterCount++
@@ -195,10 +195,10 @@ func BenchmarkSSTableIteration(b *testing.B) {
 				break // Stop on error rather than failing
 			}
 		}
-		
+
 		// Clean up
 		iter.Close()
-		
+
 		// Make sure we actually got some data
 		if iterCount == 0 && i == 0 {
 			b.Fatal("Failed to iterate through any entries")
@@ -245,7 +245,7 @@ func BenchmarkSSTableSeek(b *testing.B) {
 	if err != nil {
 		b.Skipf("Cannot create iterator: %v", err)
 	}
-	
+
 	// Test seek with a single key
 	keyTest := []byte("bench-key-1")
 	err = testIter.Seek(keyTest)
@@ -262,20 +262,20 @@ func BenchmarkSSTableSeek(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	
+
 	// Rather than reusing a single iterator which might have issues,
 	// create a new one for each iteration
 	for i := 0; i < b.N; i++ {
 		// Pick a key that exists
 		idx := i % keyCount
 		key := keys[idx]
-		
+
 		// Create a new iterator for each seek
 		iter, _ := sstable.Iterator()
-		
+
 		// Ignore errors, as we've already tested the basic functionality
 		_ = iter.Seek(key)
-		
+
 		// Clean up
 		iter.Close()
 	}

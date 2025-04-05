@@ -20,11 +20,11 @@ type TraversalVisitor func(node model.Node, depth int) (bool, error)
 
 // Traversal manages graph traversals
 type Traversal struct {
-	Engine      *storage.StorageEngine
-	NodeIndex   storage.Index
-	EdgeIndex   storage.Index
-	MaxDepth    int
-	Type        TraversalType
+	Engine    *storage.StorageEngine
+	NodeIndex storage.Index
+	EdgeIndex storage.Index
+	MaxDepth  int
+	Type      TraversalType
 }
 
 // NewTraversal creates a new traversal with the given parameters
@@ -204,7 +204,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", nodeID, err)
 		}
-		
+
 		if err == nil {
 			var outEdgeIDs []string
 			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
@@ -244,7 +244,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting incoming edges for node %d: %w", nodeID, err)
 		}
-		
+
 		if err == nil {
 			var inEdgeIDs []string
 			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
