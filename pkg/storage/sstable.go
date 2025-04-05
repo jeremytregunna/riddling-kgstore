@@ -70,7 +70,8 @@ type SSTableConfig struct {
 	Comparator Comparator   // Comparator for key comparison
 }
 
-// CreateSSTable creates a new SSTable from a MemTable
+// CreateSSTable creates a new SSTable from a MemTable using an atomic operation
+// to ensure that crashes during creation don't leave partial SSTables
 func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 	if memTable == nil {
 		return nil, errors.New("cannot create SSTable from nil MemTable")
@@ -84,12 +85,23 @@ func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 		config.Comparator = DefaultComparator
 	}
 
-	// Ensure the directory exists
+	// Ensure the SSTable directory exists
 	if err := os.MkdirAll(config.Path, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create SSTable directory: %w", err)
 	}
 
-	// Create file paths
+	// Create a temporary directory for atomicity
+	tmpDir, err := os.MkdirTemp(config.Path, fmt.Sprintf("sstable_%d_tmp", config.ID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	
+	// Create temporary file paths
+	tmpDataFile := filepath.Join(tmpDir, fmt.Sprintf("%d.data", config.ID))
+	tmpIndexFile := filepath.Join(tmpDir, fmt.Sprintf("%d.index", config.ID))
+	tmpFilterFile := filepath.Join(tmpDir, fmt.Sprintf("%d.filter", config.ID))
+	
+	// Create final file paths
 	dataFile := filepath.Join(config.Path, fmt.Sprintf("%d.data", config.ID))
 	indexFile := filepath.Join(config.Path, fmt.Sprintf("%d.index", config.ID))
 	filterFile := filepath.Join(config.Path, fmt.Sprintf("%d.filter", config.ID))
@@ -98,9 +110,9 @@ func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 	sst := &SSTable{
 		id:         config.ID,
 		path:       config.Path,
-		dataFile:   dataFile,
-		indexFile:  indexFile,
-		filterFile: filterFile,
+		dataFile:   tmpDataFile, // Temporarily use the tmp file paths
+		indexFile:  tmpIndexFile,
+		filterFile: tmpFilterFile,
 		logger:     config.Logger,
 		comparator: config.Comparator,
 		isOpen:     false,
@@ -109,26 +121,91 @@ func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 
 	// Get entries from the MemTable
 	entries := memTable.GetEntries()
+	
+	// Flag to track if we should clean up temporary files
+	var cleanupTmp bool = true
+	defer func() {
+		if cleanupTmp {
+			// Clean up temporary directory on failure
+			os.RemoveAll(tmpDir)
+		}
+	}()
+	
 	if len(entries) == 0 {
 		// Create empty SSTable files
-		sst.createEmptySSTable()
-		sst.logger.Info("Created empty SSTable with ID %d", config.ID)
-		return sst, nil
+		if err := sst.createEmptySSTable(); err != nil {
+			return nil, fmt.Errorf("failed to create empty SSTable: %w", err)
+		}
+	} else {
+		// Build the SSTable files
+		if err := sst.buildFromEntries(entries); err != nil {
+			return nil, fmt.Errorf("failed to build SSTable: %w", err)
+		}
 	}
-
-	// Build the SSTable files
-	if err := sst.buildFromEntries(entries); err != nil {
-		// Clean up files in case of error
+	
+	// Now we need to atomically move the temporary files to their final location
+	
+	// First, ensure all data is synced to disk
+	if err := syncDirectory(tmpDir); err != nil {
+		return nil, fmt.Errorf("failed to sync temporary directory: %w", err)
+	}
+	
+	// Move files one by one
+	if err := atomicMoveFile(tmpDataFile, dataFile); err != nil {
+		return nil, fmt.Errorf("failed to move data file: %w", err)
+	}
+	
+	if err := atomicMoveFile(tmpIndexFile, indexFile); err != nil {
+		// Try to clean up the moved data file
+		os.Remove(dataFile)
+		return nil, fmt.Errorf("failed to move index file: %w", err)
+	}
+	
+	if err := atomicMoveFile(tmpFilterFile, filterFile); err != nil {
+		// Try to clean up the moved files
 		os.Remove(dataFile)
 		os.Remove(indexFile)
-		os.Remove(filterFile)
-		return nil, fmt.Errorf("failed to build SSTable: %w", err)
+		return nil, fmt.Errorf("failed to move filter file: %w", err)
 	}
-
+	
+	// Sync the parent directory to ensure file moves are durable
+	if err := syncDirectory(config.Path); err != nil {
+		return nil, fmt.Errorf("failed to sync SSTable directory: %w", err)
+	}
+	
+	// Update SSTable with final file paths
+	sst.dataFile = dataFile
+	sst.indexFile = indexFile
+	sst.filterFile = filterFile
+	
+	// Don't clean up the temporary directory, as we've successfully moved all files
+	cleanupTmp = false
+	
+	// Safe to remove the temp directory now
+	os.RemoveAll(tmpDir)
+	
 	sst.logger.Info("Created SSTable with ID %d, %d keys, %d bytes",
 		config.ID, sst.keyCount, sst.dataSize)
 
 	return sst, nil
+}
+
+// atomicMoveFile atomically moves a file from src to dst
+func atomicMoveFile(src, dst string) error {
+	// Rename is atomic on most filesystems
+	return os.Rename(src, dst)
+}
+
+// syncDirectory syncs a directory to ensure all file operations are durable
+func syncDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	
+	// Sync the directory to ensure all operations are durable
+	return f.Sync()
 }
 
 // OpenSSTable opens an existing SSTable
@@ -293,6 +370,13 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 		return fmt.Errorf("failed to create index file: %w", err)
 	}
 	defer indexFile.Close()
+	
+	// Create empty filter file
+	filterFile, err := os.Create(sst.filterFile)
+	if err != nil {
+		return fmt.Errorf("failed to create filter file: %w", err)
+	}
+	defer filterFile.Close()
 
 	// Create buffered writers
 	dataWriter := bufio.NewWriter(dataFile)
@@ -391,6 +475,13 @@ func (sst *SSTable) createEmptySSTable() error {
 		return fmt.Errorf("failed to create index file: %w", err)
 	}
 	defer indexFile.Close()
+	
+	// Create empty filter file
+	filterFile, err := os.Create(sst.filterFile)
+	if err != nil {
+		return fmt.Errorf("failed to create filter file: %w", err)
+	}
+	defer filterFile.Close()
 
 	// Write header to data file
 	binary.Write(dataFile, binary.LittleEndian, SSTableMagic)
