@@ -25,5 +25,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Structure
 Single-file database format for knowledge graphs using B-Tree indexing, page-based storage, and Write-Ahead Logging (WAL) for reliability.
 
+## Module name
+As you build more and more of the project, you must be aware when importing other pieces of code that the module name is correct, so read go.mod to figure that out.
+
 ## Implementing
 As you implement the project, you will use and update the TODO.md file checking items off as you complete them. You will start in Phase 1, and for every item, iterate them one by one until completion. Once one item is complete, you must check it off in the TODO.md before progressing.
