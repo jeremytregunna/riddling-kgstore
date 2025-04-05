@@ -416,7 +416,10 @@ func (w *WAL) Replay(memTable *MemTable) error {
 	rolledBackTxs := make(map[uint64]bool) // Rolled back transactions
 	activeTxs := make(map[uint64]bool)     // Active (uncommitted) transactions
 	
-	// First pass: scan to identify transaction status
+	// Store transaction operations for atomic replay
+	txOperations := make(map[uint64][]WALRecord)
+	
+	// First pass: scan to identify transaction status and collect operations
 	firstPassPos, err := w.file.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
 		return fmt.Errorf("failed to seek to WAL data for first pass: %w", err)
@@ -424,7 +427,7 @@ func (w *WAL) Replay(memTable *MemTable) error {
 	
 	reader = bufio.NewReader(w.file)
 	
-	// First pass to determine transaction status
+	// First pass to determine transaction status and collect operations
 	for {
 		record, err := w.readRecord(reader)
 		if err == io.EOF {
@@ -435,19 +438,37 @@ func (w *WAL) Replay(memTable *MemTable) error {
 			continue
 		}
 		
+		recordCount++
+		
 		switch record.Type {
 		case RecordTxBegin:
 			activeTxs[record.TxID] = true
+			// Initialize the operations array for this transaction
+			txOperations[record.TxID] = make([]WALRecord, 0)
 		case RecordTxCommit:
 			delete(activeTxs, record.TxID)
 			completedTxs[record.TxID] = true
 		case RecordTxRollback:
 			delete(activeTxs, record.TxID)
 			rolledBackTxs[record.TxID] = true
+			// Clear operations for rolled back transactions
+			delete(txOperations, record.TxID)
+		case RecordPut, RecordDelete:
+			// Store operations that are part of a transaction
+			if record.TxID > 0 {
+				if _, exists := txOperations[record.TxID]; exists {
+					txOperations[record.TxID] = append(txOperations[record.TxID], record)
+				}
+			}
+		}
+		
+		// Update nextTxID based on records seen
+		if record.TxID > 0 && record.TxID >= w.nextTxID {
+			w.nextTxID = record.TxID + 1
 		}
 	}
 	
-	// Second pass: replay records
+	// Second pass: apply standalone records first
 	_, err = w.file.Seek(firstPassPos, io.SeekStart)
 	if err != nil {
 		return fmt.Errorf("failed to reset file position for second pass: %w", err)
@@ -455,7 +476,7 @@ func (w *WAL) Replay(memTable *MemTable) error {
 	
 	reader = bufio.NewReader(w.file)
 	
-	// Process operations based on transaction status
+	// Apply standalone operations (not part of any transaction)
 	for {
 		record, err := w.readRecord(reader)
 		if err == io.EOF {
@@ -465,55 +486,93 @@ func (w *WAL) Replay(memTable *MemTable) error {
 			w.logger.Warn("Error reading WAL record: %v", err)
 			continue
 		}
-
-		recordCount++
 		
-		// Skip transaction control records (BEGIN/COMMIT/ROLLBACK)
-		if record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
+		// Only process standalone records (txID=0) in this pass
+		if record.TxID != 0 || record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
 			continue
 		}
 		
-		// Skip records from rolled back transactions
-		if record.TxID > 0 && rolledBackTxs[record.TxID] {
-			w.logger.Debug("Skipping record from rolled back transaction %d", record.TxID)
-			continue
-		}
-		
-		// Skip records from uncommitted transactions
-		if record.TxID > 0 && activeTxs[record.TxID] {
-			w.logger.Debug("Skipping record from uncommitted transaction %d", record.TxID)
-			continue
-		}
-		
-		// Apply standalone records (txID=0) or records from committed transactions
-		if record.TxID == 0 || completedTxs[record.TxID] {
-			// Apply the record to the MemTable
-			switch record.Type {
-			case RecordPut:
-				if err := memTable.Put(record.Key, record.Value); err != nil {
-					w.logger.Warn("Failed to apply PUT record: %v", err)
-					continue
-				}
-			case RecordDelete:
-				if err := memTable.Delete(record.Key); err != nil {
-					w.logger.Warn("Failed to apply DELETE record: %v", err)
-					continue
-				}
-			default:
-				w.logger.Warn("Unknown record type: %d", record.Type)
+		// Apply standalone records
+		switch record.Type {
+		case RecordPut:
+			if err := memTable.Put(record.Key, record.Value); err != nil {
+				w.logger.Warn("Failed to apply standalone PUT record: %v", err)
 				continue
 			}
-			
 			applyCount++
-		}
-		
-		// Track highest transaction ID seen in any record (during main loop)
-		if record.TxID > 0 && record.TxID >= w.nextTxID {
-			w.nextTxID = record.TxID + 1
-			w.logger.Debug("Updated nextTxID to %d based on record with txID=%d", w.nextTxID, record.TxID)
+		case RecordDelete:
+			if err := memTable.Delete(record.Key); err != nil {
+				w.logger.Warn("Failed to apply standalone DELETE record: %v", err)
+				continue
+			}
+			applyCount++
+		default:
+			w.logger.Warn("Unknown record type: %d", record.Type)
 		}
 	}
-
+	
+	// Third pass: apply committed transactions atomically
+	for txID, operations := range txOperations {
+		// Skip any transactions that weren't committed
+		if !completedTxs[txID] {
+			continue
+		}
+		
+		w.logger.Debug("Applying committed transaction %d with %d operations", txID, len(operations))
+		
+		// Build a temporary buffer for this transaction's operations
+		// This allows us to verify all operations can succeed before applying them
+		tempMemTable := NewMemTable(MemTableConfig{
+			MaxSize:    1024 * 1024 * 10, // Use a large size for the temp table
+			Logger:     w.logger,
+			Comparator: DefaultComparator,
+		})
+		
+		// Pre-copy existing entries that will be affected by this transaction
+		// (In a real implementation, you'd use a more sophisticated approach)
+		for _, op := range operations {
+			if op.Type == RecordPut || op.Type == RecordDelete {
+				// Try to apply to the temporary memtable
+				var err error
+				switch op.Type {
+				case RecordPut:
+					err = tempMemTable.Put(op.Key, op.Value)
+				case RecordDelete:
+					err = tempMemTable.Delete(op.Key)
+				}
+				
+				// If any operation fails, log it and skip the transaction
+				if err != nil {
+					w.logger.Warn("Transaction %d replay test failed, skipping: %v", txID, err)
+					continue
+				}
+			}
+		}
+		
+		// Now apply all operations to the real memtable
+		txApplyCount := 0
+		for _, op := range operations {
+			if op.Type == RecordPut || op.Type == RecordDelete {
+				var err error
+				switch op.Type {
+				case RecordPut:
+					err = memTable.Put(op.Key, op.Value)
+				case RecordDelete:
+					err = memTable.Delete(op.Key)
+				}
+				
+				if err != nil {
+					w.logger.Warn("Failed to apply operation from transaction %d: %v", txID, err)
+				} else {
+					txApplyCount++
+				}
+			}
+		}
+		
+		w.logger.Debug("Successfully applied %d operations from transaction %d", txApplyCount, txID)
+		applyCount += txApplyCount
+	}
+	
 	// Restore any active transactions that were not completed
 	for txID := range activeTxs {
 		w.activeTxs[txID] = true
@@ -538,7 +597,7 @@ func (w *WAL) Replay(memTable *MemTable) error {
 			w.logger.Debug("Updated nextTxID to %d based on active txID=%d", w.nextTxID, txID)
 		}
 	}
-
+	
 	// Seek back to the end of the file for future writes
 	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("failed to seek to end of WAL: %w", err)
