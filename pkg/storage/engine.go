@@ -917,10 +917,16 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
-			// Check if the key from level 1 doesn't exist in the merged MemTable
-			// If it doesn't exist, we add it; otherwise, level 0 value takes precedence
+			// For level 1, we need to consider version information
+			// Read the value and potentially its version from the SSTable
+			value := iter.Value()
+			
+			// In current implementation, we can't easily get version from the iterator
+			// So we'll add the key only if it doesn't exist in the merged MemTable (implying level 0 takes precedence)
+			// This works for now because level 0 files are always newer than level 1 files
+			// In a full implementation with versioned records, we would compare versions
+			// and take the record with the higher version
 			if !mergedMemTable.Contains(key) {
-				value := iter.Value()
 				if err := mergedMemTable.Put(key, value); err != nil {
 					e.logger.Error("Failed to add key-value pair from level 1 to merged MemTable: %v", err)
 				}
@@ -1068,10 +1074,14 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
-			// Check if the key from next level doesn't exist in the merged MemTable
-			// If it doesn't exist, we add it; otherwise, current level value takes precedence
+			// Read the value from the SSTable in the next level
+			value := iter.Value()
+			
+			// With versioned records, we would compare versions and take the one with the higher version
+			// Currently, we just check existence since level N files are guaranteed to be older than level N-1
+			// In a future implementation, we'll use explicit version comparisons from each SSTable
+			// This would prevent newer records from being overwritten during compaction
 			if !mergedMemTable.Contains(key) {
-				value := iter.Value()
 				if err := mergedMemTable.Put(key, value); err != nil {
 					e.logger.Error("Failed to add key-value pair from level %d to merged MemTable: %v", level+1, err)
 				}

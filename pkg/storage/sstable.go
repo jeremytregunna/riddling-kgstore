@@ -913,8 +913,26 @@ func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, bool, uint64, erro
 	return value, isDeleted, version, nil
 }
 
-// Iterator returns an iterator for the SSTable
+// IteratorOptions defines options for creating an SSTable iterator
+type IteratorOptions struct {
+	// IncludeTombstones determines whether deleted entries (tombstones) are included
+	IncludeTombstones bool
+}
+
+// DefaultIteratorOptions returns default options for creating an SSTable iterator
+func DefaultIteratorOptions() IteratorOptions {
+	return IteratorOptions{
+		IncludeTombstones: false, // By default, don't include tombstones
+	}
+}
+
+// Iterator returns an iterator for the SSTable with default options
 func (sst *SSTable) Iterator() (*SSTableIterator, error) {
+	return sst.IteratorWithOptions(DefaultIteratorOptions())
+}
+
+// IteratorWithOptions returns an iterator for the SSTable with specified options
+func (sst *SSTable) IteratorWithOptions(options IteratorOptions) (*SSTableIterator, error) {
 	// Check if SSTable is open
 	if !sst.isOpen {
 		return nil, errors.New("SSTable is not open")
@@ -922,9 +940,12 @@ func (sst *SSTable) Iterator() (*SSTableIterator, error) {
 
 	// Create and initialize an iterator
 	iter := &SSTableIterator{
-		sst:      sst,
-		position: 0,
-		valid:    false,
+		sst:              sst,
+		position:         0,
+		valid:            false,
+		isDeleted:        false,
+		version:          0,
+		includeTombstones: options.IncludeTombstones,
 	}
 
 	// Open the data file
@@ -965,12 +986,15 @@ func (sst *SSTable) Iterator() (*SSTableIterator, error) {
 
 // SSTableIterator allows iterating over the key-value pairs in an SSTable
 type SSTableIterator struct {
-	sst      *SSTable
-	dataFile *os.File
-	position uint64
-	key      []byte
-	value    []byte
-	valid    bool
+	sst              *SSTable
+	dataFile         *os.File
+	position         uint64
+	key              []byte
+	value            []byte
+	valid            bool
+	version          uint64    // Version number for versioned records
+	isDeleted        bool      // Deletion flag for tombstones
+	includeTombstones bool     // Whether to include tombstones during iteration
 }
 
 // Valid returns true if the iterator is pointing to a valid key-value pair
@@ -992,6 +1016,22 @@ func (iter *SSTableIterator) Value() []byte {
 		return nil
 	}
 	return append([]byte{}, iter.value...)
+}
+
+// Version returns the version number of the current record
+func (iter *SSTableIterator) Version() uint64 {
+	if !iter.valid {
+		return 0
+	}
+	return iter.version
+}
+
+// IsDeleted returns whether the current record is a tombstone (deleted)
+func (iter *SSTableIterator) IsDeleted() bool {
+	if !iter.valid {
+		return false
+	}
+	return iter.isDeleted
 }
 
 // Next moves the iterator to the next key-value pair
@@ -1057,9 +1097,13 @@ func (iter *SSTableIterator) Next() error {
 	
 	isDeleted := isDeletedByte[0] != 0
 
-	// Update iterator state
-	// Skip tombstones - don't include deleted entries in iteration
-	if isDeleted {
+	// Update iterator state with version and deletion info
+	iter.version = binary.LittleEndian.Uint64(versionBytes)
+	iter.isDeleted = isDeleted
+	
+	// Skip tombstones unless specifically requested
+	// If includeTombstones is false, skip deleted records
+	if isDeleted && iter.includeTombstones == false {
 		// Skip this entry and move to the next
 		iter.position += uint64(2) + uint64(keyLen) + uint64(4) + uint64(valueLen) + uint64(8) + uint64(1)
 		return iter.Next()
@@ -1068,6 +1112,7 @@ func (iter *SSTableIterator) Next() error {
 	iter.key = key
 	iter.value = value
 	iter.valid = true
+	// iter.version and iter.isDeleted are already set above
 	iter.position += uint64(2) + uint64(keyLen) + uint64(4) + uint64(valueLen) + uint64(8) + uint64(1)
 
 	return nil

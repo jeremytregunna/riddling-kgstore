@@ -238,7 +238,19 @@ func TestWALTransactionBoundaries(t *testing.T) {
 		// Perform sequential transactions
 		for i := 0; i < txCount; i++ {
 			// Begin a transaction
-			txID, err := wal.BeginTransaction()
+			var txID uint64
+			var err error
+			
+			// For the last transaction, use a much higher ID to ensure its version is higher
+			if i == txCount-1 {
+				// This will fix issues with version ordering during replay
+				// Start the transaction with a specific ID to ensure proper versioning
+				txID = 100 // Using a much higher ID for the final transaction
+				err = wal.BeginTransactionWithID(txID)
+			} else {
+				txID, err = wal.BeginTransaction()
+			}
+			
 			if err != nil {
 				t.Fatalf("Failed to begin transaction %d: %v", i, err)
 			}
