@@ -373,261 +373,44 @@ func (w *WAL) Sync() error {
 	return nil
 }
 
-// Replay replays the WAL records and applies them to the given MemTable
+// ReplayOptions defines configuration options for WAL replay
+type ReplayOptions struct {
+	// StrictMode causes replay to fail completely if any record is corrupted
+	StrictMode bool
+	
+	// AtomicTxOnly ensures that transactions are applied atomically or not at all
+	AtomicTxOnly bool
+}
+
+// DefaultReplayOptions returns the default options for WAL replay
+func DefaultReplayOptions() ReplayOptions {
+	return ReplayOptions{
+		StrictMode:   false, // Default to lenient mode for backward compatibility
+		AtomicTxOnly: true,  // Default to atomic transaction application
+	}
+}
+
+// Replay replays the WAL records and applies them to the given MemTable with default options
 func (w *WAL) Replay(memTable *MemTable) error {
+	return w.ReplayWithOptions(memTable, DefaultReplayOptions())
+}
+
+// ReplayWithOptions replays the WAL records and applies them to the given MemTable with specific options
+func (w *WAL) ReplayWithOptions(memTable *MemTable, options ReplayOptions) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if !w.isOpen {
-		return ErrWALClosed
-	}
-
-	// Ensure the WAL is flushed to disk
-	if err := w.writer.Flush(); err != nil {
-		return fmt.Errorf("failed to flush WAL before replay: %w", err)
-	}
-
-	// First, check the version to determine header size
-	if _, err := w.file.Seek(4, io.SeekStart); err != nil { // Skip magic number
-		return fmt.Errorf("failed to seek past magic number: %w", err)
-	}
-	
-	var version uint16
-	if err := binary.Read(w.file, binary.LittleEndian, &version); err != nil {
-		return fmt.Errorf("failed to read version: %w", err)
-	}
-	
-	// Determine the header size based on version
-	headerSize := 6 // Magic (4) + Version (2) for v1
-	if version == 2 {
-		headerSize = 14 // Magic (4) + Version (2) + NextTxID (8) for v2
-	}
-	
-	// Seek to the beginning of the file, after the header
-	if _, err := w.file.Seek(int64(headerSize), io.SeekStart); err != nil {
-		return fmt.Errorf("failed to seek to WAL data: %w", err)
-	}
-
-	reader := bufio.NewReader(w.file)
-	recordCount := 0
-	applyCount := 0
-	
-	// Track transaction status
-	completedTxs := make(map[uint64]bool)  // Committed transactions
-	rolledBackTxs := make(map[uint64]bool) // Rolled back transactions
-	activeTxs := make(map[uint64]bool)     // Active (uncommitted) transactions
-	
-	// Store transaction operations for atomic replay
-	txOperations := make(map[uint64][]WALRecord)
-	
-	// First pass: scan to identify transaction status and collect operations
-	firstPassPos, err := w.file.Seek(int64(headerSize), io.SeekStart)
+	// Use the enhanced replay implementation which provides better handling
+	// of corrupted and incomplete transactions
+	stats, err := EnhancedReplayWithOptions(w, memTable, options)
 	if err != nil {
-		return fmt.Errorf("failed to seek to WAL data for first pass: %w", err)
-	}
-	
-	reader = bufio.NewReader(w.file)
-	
-	// First pass to determine transaction status and collect operations
-	for {
-		record, err := w.readRecord(reader)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			w.logger.Warn("Error reading WAL record during first pass: %v", err)
-			continue
-		}
-		
-		recordCount++
-		
-		switch record.Type {
-		case RecordTxBegin:
-			activeTxs[record.TxID] = true
-			// Initialize the operations array for this transaction
-			txOperations[record.TxID] = make([]WALRecord, 0)
-		case RecordTxCommit:
-			delete(activeTxs, record.TxID)
-			completedTxs[record.TxID] = true
-		case RecordTxRollback:
-			delete(activeTxs, record.TxID)
-			rolledBackTxs[record.TxID] = true
-			// Clear operations for rolled back transactions
-			delete(txOperations, record.TxID)
-		case RecordPut, RecordDelete:
-			// Store operations that are part of a transaction
-			if record.TxID > 0 {
-				if _, exists := txOperations[record.TxID]; exists {
-					txOperations[record.TxID] = append(txOperations[record.TxID], record)
-				}
-			}
-		}
-		
-		// Update nextTxID based on records seen
-		if record.TxID > 0 && record.TxID >= w.nextTxID {
-			w.nextTxID = record.TxID + 1
-		}
-	}
-	
-	// Second pass: apply standalone records first
-	_, err = w.file.Seek(firstPassPos, io.SeekStart)
-	if err != nil {
-		return fmt.Errorf("failed to reset file position for second pass: %w", err)
-	}
-	
-	reader = bufio.NewReader(w.file)
-	
-	// Apply standalone operations (not part of any transaction)
-	for {
-		record, err := w.readRecord(reader)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			w.logger.Warn("Error reading WAL record: %v", err)
-			continue
-		}
-		
-		// Only process standalone records (txID=0) in this pass
-		if record.TxID != 0 || record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
-			continue
-		}
-		
-		// Apply standalone records
-		switch record.Type {
-		case RecordPut:
-			// For non-transaction operations, assign monotonically increasing versions
-			// based on WAL replay order
-			w.nextTxID++
-			version := w.nextTxID
-			
-			if err := memTable.PutWithVersion(record.Key, record.Value, version); err != nil {
-				w.logger.Warn("Failed to apply standalone PUT record: %v", err)
-				continue
-			}
-			applyCount++
-		case RecordDelete:
-			// For non-transaction operations, assign monotonically increasing versions
-			// based on WAL replay order
-			w.nextTxID++
-			version := w.nextTxID
-			
-			if err := memTable.DeleteWithVersion(record.Key, version); err != nil {
-				w.logger.Warn("Failed to apply standalone DELETE record: %v", err)
-				continue
-			}
-			applyCount++
-		default:
-			w.logger.Warn("Unknown record type: %d", record.Type)
-		}
-	}
-	
-	// Third pass: apply committed transactions atomically
-	for txID, operations := range txOperations {
-		// Skip any transactions that weren't committed
-		if !completedTxs[txID] {
-			continue
-		}
-		
-		w.logger.Debug("Applying committed transaction %d with %d operations", txID, len(operations))
-		
-		// Build a temporary buffer for this transaction's operations
-		// This allows us to verify all operations can succeed before applying them
-		tempMemTable := NewMemTable(MemTableConfig{
-			MaxSize:    1024 * 1024 * 10, // Use a large size for the temp table
-			Logger:     w.logger,
-			Comparator: DefaultComparator,
-		})
-		
-		// Pre-copy existing entries that will be affected by this transaction
-		// (In a real implementation, you'd use a more sophisticated approach)
-		for _, op := range operations {
-			if op.Type == RecordPut || op.Type == RecordDelete {
-				// Try to apply to the temporary memtable
-				var err error
-				switch op.Type {
-				case RecordPut:
-					// Use the transaction ID as the version for consistency
-					version := txID
-					err = tempMemTable.PutWithVersion(op.Key, op.Value, version)
-				case RecordDelete:
-					// Use the transaction ID as the version for consistency
-					version := txID
-					err = tempMemTable.DeleteWithVersion(op.Key, version)
-				}
-				
-				// If any operation fails, log it and skip the transaction
-				if err != nil {
-					w.logger.Warn("Transaction %d replay test failed, skipping: %v", txID, err)
-					continue
-				}
-			}
-		}
-		
-		// Now apply all operations to the real memtable
-		txApplyCount := 0
-		for _, op := range operations {
-			if op.Type == RecordPut || op.Type == RecordDelete {
-				var err error
-				switch op.Type {
-				case RecordPut:
-					// Use the transaction ID as the version
-					// This ensures all operations in the same transaction have the same version
-					// for proper atomicity
-					version := txID
-					err = memTable.PutWithVersion(op.Key, op.Value, version)
-				case RecordDelete:
-					// Use the transaction ID as the version
-					// This ensures all operations in the same transaction have the same version
-					// for proper atomicity
-					version := txID
-					err = memTable.DeleteWithVersion(op.Key, version)
-				}
-				
-				if err != nil {
-					w.logger.Warn("Failed to apply operation from transaction %d: %v", txID, err)
-				} else {
-					txApplyCount++
-				}
-			}
-		}
-		
-		w.logger.Debug("Successfully applied %d operations from transaction %d", txApplyCount, txID)
-		applyCount += txApplyCount
-	}
-	
-	// Restore any active transactions that were not completed
-	for txID := range activeTxs {
-		w.activeTxs[txID] = true
-	}
-	
-	// Double-check to ensure nextTxID is properly updated based on all transaction records
-	for txID := range completedTxs {
-		if txID >= w.nextTxID {
-			w.nextTxID = txID + 1
-			w.logger.Debug("Updated nextTxID to %d based on completed txID=%d", w.nextTxID, txID)
-		}
-	}
-	for txID := range rolledBackTxs {
-		if txID >= w.nextTxID {
-			w.nextTxID = txID + 1
-			w.logger.Debug("Updated nextTxID to %d based on rolled back txID=%d", w.nextTxID, txID)
-		}
-	}
-	for txID := range activeTxs {
-		if txID >= w.nextTxID {
-			w.nextTxID = txID + 1
-			w.logger.Debug("Updated nextTxID to %d based on active txID=%d", w.nextTxID, txID)
-		}
-	}
-	
-	// Seek back to the end of the file for future writes
-	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("failed to seek to end of WAL: %w", err)
+		return err
 	}
 
-	w.logger.Info("Replayed %d of %d records from WAL (committed txs: %d, rolled back: %d, incomplete: %d)",
-		applyCount, recordCount, len(completedTxs), len(rolledBackTxs), len(activeTxs))
+	// Log summary information about the replay
+	w.logger.Info("Replayed %d of %d records from WAL (applied: %d, corrupted: %d, skipped txs: %d)",
+		stats.AppliedCount, stats.RecordCount, stats.AppliedCount, stats.CorruptedCount, stats.SkippedTxCount)
+	
 	return nil
 }
 

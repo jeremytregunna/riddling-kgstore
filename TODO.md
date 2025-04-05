@@ -42,8 +42,12 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [x] Implement Bloom Filter creation and lookup.
     * [x] When the MemTable reaches a certain size, it's data flushes to a new SSTable.
     * [x] Implement a background process that merges multiple SSTables into larger ones, reducing the number of files nad improving read performance. Start with a simple level-based compaction strategy.
+    * [x] Enhance compaction with version awareness to prevent newer records from being overwritten by older ones
+    * [x] Add tombstone support for tracking deleted records in SSTables
     * [x] Implement basic file management system for SSTables.
     * [x] Implement a write-ahead log (WAL) for durability. This is *critical*
+    * [x] Enhance WAL replay with configurable options for recovery modes (strict/lenient, atomic/non-atomic)
+    * [x] Add transaction boundary support to WAL for improved ACID compliance
 * **Basic Indexing:**
     * [x] Implement primary index (Node ID -> Node data)
     * [x] Implement Secondary index for Node Labels (Label -> List of Node IDs)
@@ -78,12 +82,18 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [x] Performance benchmarks for different query types.
     * [x] Implement a test suite with a variety of graph data.
 
-**Phase 4: Advanced Indexing & Optimization (2-3 months)**
+**Phase 4: Advanced Indexing & ACID Compliance (2-3 months)**
 
 * **Advanced Indexing:**
     * [ ] Implement LSM-tree based index on Node labels (consistent with storage engine architecture).
     * [ ] Implement full-text index as specialized SSTable format for Node properties.
     * [ ] Implement spatial index as specialized SSTable format (if applicable).
+* **ACID Compliance Enhancements:**
+    * [x] Complete the implementation of configurable WAL replay options
+    * [x] Implement stronger atomicity guarantees during crash recovery
+    * [ ] Add support for multi-operation transactions with proper isolation
+    * [ ] Improve durability with configurable sync barriers
+    * [ ] Implement consistency checks and validation during operations
 * **Optimization:**
     * [ ] Implement LRU query cache with configurable size limits to prevent memory explosion.
     * [ ] Implement query rewriting (e.g., constant folding).
