@@ -300,7 +300,6 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	
 	// Reserve space for header in data file
 	headerSize := 14 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2)
-	dataOffset := uint64(headerSize)
 	
 	// Get min and max keys
 	minKey := entries[0]
@@ -317,16 +316,28 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	}
 	
 	// Adjust header size to include min and max keys
-	dataOffset += uint64(len(minKey) + len(maxKey))
+	headerSize += len(minKey) + len(maxKey)
+	dataOffset := uint64(headerSize)
 	
-	// Write placeholder header (will be updated later)
-	for i := 0; i < int(dataOffset); i++ {
-		dataWriter.WriteByte(0)
-	}
+	// Write magic and version
+	binary.Write(dataWriter, binary.LittleEndian, SSTableMagic)
+	binary.Write(dataWriter, binary.LittleEndian, SSTableVersion)
+	
+	// Get number of key-value pairs
+	keyCount := uint32(len(entries) / 2)
+	
+	// Write key count
+	binary.Write(dataWriter, binary.LittleEndian, keyCount)
+	
+	// Write min key length and max key length
+	binary.Write(dataWriter, binary.LittleEndian, uint16(len(minKey)))
+	binary.Write(dataWriter, binary.LittleEndian, uint16(len(maxKey)))
+	
+	// Write min key and max key
+	dataWriter.Write(minKey)
+	dataWriter.Write(maxKey)
 	
 	// Write key-value pairs to data file and build index
-	keyCount := uint32(0)
-	
 	for i := 0; i < len(entries); i += 2 {
 		key := entries[i]
 		value := entries[i+1]
@@ -342,32 +353,18 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 		binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
 		dataWriter.Write(value)
 		
-		// Update offset - make sure all values are uint64 to avoid type mismatches
+		// Update offset for the next entry
 		dataOffset += uint64(2) + uint64(len(key)) + uint64(4) + uint64(len(value))
-		keyCount++
 	}
 	
-	// Flush writers
-	indexWriter.Flush()
+	// Flush writers to ensure all data is written
+	if err := indexWriter.Flush(); err != nil {
+		return fmt.Errorf("failed to flush index writer: %w", err)
+	}
 	
-	// Rewrite header with actual data
-	dataFile.Seek(0, io.SeekStart)
-	
-	// Write magic and version
-	binary.Write(dataFile, binary.LittleEndian, SSTableMagic)
-	binary.Write(dataFile, binary.LittleEndian, SSTableVersion)
-	
-	// Write key count
-	binary.Write(dataFile, binary.LittleEndian, keyCount)
-	
-	// Write min key length and min key
-	binary.Write(dataFile, binary.LittleEndian, uint16(len(minKey)))
-	binary.Write(dataFile, binary.LittleEndian, uint16(len(maxKey)))
-	dataFile.Write(minKey)
-	dataFile.Write(maxKey)
-	
-	// Flush data writer
-	dataWriter.Flush()
+	if err := dataWriter.Flush(); err != nil {
+		return fmt.Errorf("failed to flush data writer: %w", err)
+	}
 	
 	// Update SSTable metadata
 	sst.keyCount = keyCount
@@ -516,13 +513,41 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 		return 0, ErrKeyNotFoundInSSTable
 	}
 	
-	// Binary search for the key
-	var offset uint64
+	// Implement a true binary search through the index entries
+	var entrySize int // size of a single index entry = 2 bytes (key length) + key + 8 bytes (offset)
+	var entries []int // positions of index entries in the file
 	var found bool
+	var offset uint64
 	
-	// Start at the beginning of the index
+	// First pass: build a list of entry positions
 	pos := 0
 	for pos < len(indexData) {
+		entries = append(entries, pos)
+		
+		// Make sure there's enough data for key length
+		if pos+2 > len(indexData) {
+			break
+		}
+		
+		keyLen := binary.LittleEndian.Uint16(indexData[pos:])
+		
+		// Calculate entry size and move to next entry
+		entrySize = 2 + int(keyLen) + 8
+		pos += entrySize
+	}
+	
+	// No entries found
+	if len(entries) == 0 {
+		return 0, ErrKeyNotFoundInSSTable
+	}
+	
+	// Binary search through the entries
+	left, right := 0, len(entries)-1
+	
+	for left <= right {
+		mid := left + (right-left)/2
+		pos = entries[mid]
+		
 		// Make sure there's enough data for key length
 		if pos+2 > len(indexData) {
 			break
@@ -545,7 +570,6 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 		}
 		
 		indexOffset := binary.LittleEndian.Uint64(indexData[pos:])
-		pos += 8
 		
 		// Compare keys
 		cmp := sst.comparator(key, indexKey)
@@ -558,6 +582,12 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 			sst.indexCache[keyStr] = offset
 			
 			break
+		} else if cmp < 0 {
+			// Search left half
+			right = mid - 1
+		} else {
+			// Search right half
+			left = mid + 1
 		}
 	}
 	
@@ -599,6 +629,11 @@ func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read key length: %w", err)
 	}
 	
+	// Verify key length is reasonable (sanity check)
+	if keyLen > 1024 { // Assume keys are not larger than 1KB
+		return nil, fmt.Errorf("key length %d appears invalid", keyLen)
+	}
+	
 	// Validate key length
 	if int64(offset) + int64(2) + int64(keyLen) >= fileSize {
 		return nil, fmt.Errorf("key length %d would read past end of file", keyLen)
@@ -615,6 +650,11 @@ func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read value length: %w", err)
 	}
 	
+	// Verify value length is reasonable (sanity check)
+	if valueLen > 10*1024*1024 { // 10MB max
+		return nil, fmt.Errorf("value length %d appears invalid (exceeds max size)", valueLen)
+	}
+	
 	// Validate value length
 	currentPos, err := dataFile.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -622,12 +662,8 @@ func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, error) {
 	}
 	
 	if currentPos + int64(valueLen) > fileSize {
-		return nil, fmt.Errorf("value length %d would read past end of file", valueLen)
-	}
-	
-	// For safety, limit value length to a reasonable size
-	if valueLen > 10*1024*1024 { // 10MB max
-		return nil, fmt.Errorf("value length %d exceeds maximum allowed size", valueLen)
+		return nil, fmt.Errorf("value length %d would read past end of file (at pos %d of size %d)", 
+			valueLen, currentPos, fileSize)
 	}
 	
 	// Read value
