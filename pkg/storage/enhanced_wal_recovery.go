@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 )
 
 // This file contains enhancements to WAL recovery
@@ -34,6 +35,16 @@ type ReplayStats struct {
 	
 	// Number of corrupted transactions encountered
 	CorruptedTransactions int
+	
+	// Timestamps for performance measurement
+	StartTime time.Time
+	EndTime time.Time
+	Duration time.Duration
+	
+	// Transaction counts
+	TxBeginCount int
+	TxCommitCount int
+	TxRollbackCount int
 }
 
 // EnhancedReplayWithOptions provides improved WAL replay with configurable options and detailed error handling

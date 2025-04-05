@@ -22,8 +22,8 @@ var (
 type StorageEngine struct {
 	mu               sync.RWMutex
 	config           EngineConfig
-	memTable         *MemTable           // Current MemTable for writes
-	immMemTables     []*MemTable         // Immutable MemTables waiting to be flushed
+	memTable         MemTableInterface   // Current MemTable for writes - can be standard or lock-free
+	immMemTables     []MemTableInterface // Immutable MemTables waiting to be flushed
 	sstables         []*SSTable          // Sorted String Tables (persistent storage)
 	wal              *WAL                // Write-Ahead Log
 	logger           model.Logger        // Logger for storage engine operations
@@ -57,6 +57,9 @@ type EngineConfig struct {
 
 	// Bloom filter false positive rate
 	BloomFilterFPR float64
+
+	// Use lock-free MemTable implementation
+	UseLockFreeMemTable bool
 }
 
 // DefaultEngineConfig returns a default configuration for the storage engine
@@ -69,6 +72,7 @@ func DefaultEngineConfig() EngineConfig {
 		Comparator:           DefaultComparator,
 		BackgroundCompaction: true,
 		BloomFilterFPR:       0.01, // 1% false positive rate
+		UseLockFreeMemTable:  false, // Default to original MemTable for backward compatibility
 	}
 }
 
@@ -116,12 +120,22 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		return nil, fmt.Errorf("failed to create WAL: %w", err)
 	}
 
-	// Create a new MemTable
-	memTable := NewMemTable(MemTableConfig{
-		MaxSize:    config.MemTableSize,
-		Logger:     config.Logger,
-		Comparator: config.Comparator,
-	})
+	// Create a new MemTable - either lock-free or standard based on config
+	var memTable MemTableInterface
+	if config.UseLockFreeMemTable {
+		memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+			MaxSize:    config.MemTableSize,
+			Logger:     config.Logger,
+			Comparator: config.Comparator,
+		})
+		config.Logger.Info("Using lock-free MemTable implementation")
+	} else {
+		memTable = NewMemTable(MemTableConfig{
+			MaxSize:    config.MemTableSize,
+			Logger:     config.Logger,
+			Comparator: config.Comparator,
+		})
+	}
 
 	// Create the transaction manager with WAL reference
 	txManager, err := NewTransactionManager(config.DataDir, config.Logger, wal)
@@ -134,7 +148,7 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 	engine := &StorageEngine{
 		config:           config,
 		memTable:         memTable,
-		immMemTables:     make([]*MemTable, 0),
+		immMemTables:     make([]MemTableInterface, 0),
 		sstables:         make([]*SSTable, 0),
 		wal:              wal,
 		logger:           config.Logger,
@@ -155,9 +169,27 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 	}
 
 	// Replay the WAL to recover the in-memory state
-	if err := wal.Replay(memTable); err != nil {
-		wal.Close()
-		return nil, fmt.Errorf("failed to replay WAL: %w", err)
+	if memTableImpl, ok := memTable.(*MemTable); ok {
+		// Original implementation
+		if err := wal.Replay(memTableImpl); err != nil {
+			wal.Close()
+			return nil, fmt.Errorf("failed to replay WAL: %w", err)
+		}
+	} else {
+		// New lock-free implementation - we need to convert each operation
+		// Currently this is limited, but would need proper implementation
+		config.Logger.Warn("WAL replay for lock-free MemTable is limited - consider using standard MemTable for recovery")
+		
+		// Simple implementation to populate the MemTable
+		opts := DefaultReplayOptions()
+		stats, err := EnhancedReplayToInterface(wal, memTable, opts)
+		if err != nil {
+			wal.Close()
+			return nil, fmt.Errorf("failed to replay WAL to lock-free MemTable: %w", err)
+		}
+		
+		config.Logger.Info("Replayed %d of %d records from WAL to lock-free MemTable", 
+			stats.AppliedCount, stats.RecordCount)
 	}
 
 	// Start background compaction if enabled
@@ -240,12 +272,20 @@ func (e *StorageEngine) Put(key, value []byte) error {
 		e.memTable.MarkFlushed()
 		e.immMemTables = append(e.immMemTables, e.memTable)
 
-		// Create a new MemTable
-		e.memTable = NewMemTable(MemTableConfig{
-			MaxSize:    e.config.MemTableSize,
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
+		// Create a new MemTable - either lock-free or standard based on config
+		if e.config.UseLockFreeMemTable {
+			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		} else {
+			e.memTable = NewMemTable(MemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		}
 
 		// Signal the compaction thread
 		e.compactionCond.Signal()
@@ -331,12 +371,20 @@ func (e *StorageEngine) Delete(key []byte) error {
 		e.memTable.MarkFlushed()
 		e.immMemTables = append(e.immMemTables, e.memTable)
 
-		// Create a new MemTable
-		e.memTable = NewMemTable(MemTableConfig{
-			MaxSize:    e.config.MemTableSize,
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
+		// Create a new MemTable - either lock-free or standard based on config
+		if e.config.UseLockFreeMemTable {
+			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		} else {
+			e.memTable = NewMemTable(MemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		}
 
 		// Signal the compaction thread
 		e.compactionCond.Signal()
@@ -413,12 +461,20 @@ func (e *StorageEngine) Flush() error {
 		e.memTable.MarkFlushed()
 		e.immMemTables = append(e.immMemTables, e.memTable)
 
-		// Create a new MemTable
-		e.memTable = NewMemTable(MemTableConfig{
-			MaxSize:    e.config.MemTableSize,
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
+		// Create a new MemTable - either lock-free or standard based on config
+		if e.config.UseLockFreeMemTable {
+			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		} else {
+			e.memTable = NewMemTable(MemTableConfig{
+				MaxSize:    e.config.MemTableSize,
+				Logger:     e.logger,
+				Comparator: e.config.Comparator,
+			})
+		}
 
 		// Signal the compaction thread
 		e.compactionCond.Signal()
@@ -532,7 +588,7 @@ func (e *StorageEngine) Stats() EngineStats {
 
 // flushMemTableLocked flushes a MemTable to disk, creating a new SSTable
 // Caller must hold the lock
-func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
+func (e *StorageEngine) flushMemTableLocked(memTable MemTableInterface) error {
 	if memTable.EntryCount() == 0 {
 		e.logger.Debug("Skipping flush of empty MemTable")
 		return nil
@@ -868,12 +924,21 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	// Log the compaction operation
 	e.logger.Info("Starting compaction of level 0 with %d files", len(lc.Levels[0]))
 
-	// Create a new MemTable to merge level 0 SSTables
-	mergedMemTable := NewMemTable(MemTableConfig{
-		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-		Logger:     e.logger,
-		Comparator: e.config.Comparator,
-	})
+	// Create a new MemTable to merge level 0 SSTables - either lock-free or standard based on config
+	var mergedMemTable MemTableInterface
+	if e.config.UseLockFreeMemTable {
+		mergedMemTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+			Logger:     e.logger,
+			Comparator: e.config.Comparator,
+		})
+	} else {
+		mergedMemTable = NewMemTable(MemTableConfig{
+			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+			Logger:     e.logger,
+			Comparator: e.config.Comparator,
+		})
+	}
 
 	// Read all key-value pairs from level 0 SSTables (newest to oldest for correct overwrite semantics)
 	// Level 0 has overlapping key ranges, so we need to process newer files first
@@ -1029,12 +1094,21 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 
 	e.logger.Info("Starting compaction of level %d with %d files", level, len(lc.Levels[level]))
 
-	// Create a new MemTable to merge SSTables
-	mergedMemTable := NewMemTable(MemTableConfig{
-		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-		Logger:     e.logger,
-		Comparator: e.config.Comparator,
-	})
+	// Create a new MemTable to merge SSTables - either lock-free or standard based on config
+	var mergedMemTable MemTableInterface
+	if e.config.UseLockFreeMemTable {
+		mergedMemTable = NewLockFreeMemTable(LockFreeMemTableConfig{
+			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+			Logger:     e.logger,
+			Comparator: e.config.Comparator,
+		})
+	} else {
+		mergedMemTable = NewMemTable(MemTableConfig{
+			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+			Logger:     e.logger,
+			Comparator: e.config.Comparator,
+		})
+	}
 
 	// First read all key-value pairs from the current level
 	for _, sstable := range lc.Levels[level] {

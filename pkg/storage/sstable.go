@@ -85,7 +85,7 @@ func DefaultCreateSSTOptions() CreateSSTOptions {
 
 // CreateSSTableWithOptions creates a new SSTable from a MemTable with specific options
 // to ensure that crashes during creation don't leave partial SSTables
-func CreateSSTableWithOptions(config SSTableConfig, memTable *MemTable, options CreateSSTOptions) (*SSTable, error) {
+func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, options CreateSSTOptions) (*SSTable, error) {
 	if memTable == nil {
 		return nil, errors.New("cannot create SSTable from nil MemTable")
 	}
@@ -213,7 +213,7 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable *MemTable, options 
 // CreateSSTable creates a new SSTable from a MemTable using an atomic operation
 // to ensure that crashes during creation don't leave partial SSTables.
 // This version does not include tombstones for deleted entries.
-func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
+func CreateSSTable(config SSTableConfig, memTable MemTableInterface) (*SSTable, error) {
 	return CreateSSTableWithOptions(config, memTable, DefaultCreateSSTOptions())
 }
 
