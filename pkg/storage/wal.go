@@ -26,33 +26,39 @@ var (
 type RecordType byte
 
 const (
-	RecordPut    RecordType = 1
-	RecordDelete RecordType = 2
+	RecordPut       RecordType = 1
+	RecordDelete    RecordType = 2
+	RecordTxBegin   RecordType = 3
+	RecordTxCommit  RecordType = 4
+	RecordTxRollback RecordType = 5
 )
 
 // WAL header constants
 const (
 	WALMagic   uint32 = 0x57414C4C // "WALL"
-	WALVersion uint16 = 1
+	WALVersion uint16 = 2          // Updated to version 2 to include nextTxID in header
 )
 
 // WALRecord represents a single record in the WAL
 type WALRecord struct {
-	Type      RecordType
-	Key       []byte
-	Value     []byte
-	Timestamp int64
+	Type        RecordType
+	Key         []byte
+	Value       []byte
+	Timestamp   int64
+	TxID        uint64  // Transaction ID for transaction-related records
 }
 
 // WAL implements a Write-Ahead Log for durability
 type WAL struct {
-	mu          sync.Mutex
-	file        *os.File
-	writer      *bufio.Writer
-	path        string
-	isOpen      bool
-	syncOnWrite bool
-	logger      model.Logger
+	mu             sync.Mutex
+	file           *os.File
+	writer         *bufio.Writer
+	path           string
+	isOpen         bool
+	syncOnWrite    bool
+	logger         model.Logger
+	activeTxs      map[uint64]bool // Track active transactions by ID
+	nextTxID       uint64          // Next transaction ID to assign
 }
 
 // WALConfig holds configuration options for the WAL
@@ -87,6 +93,8 @@ func NewWAL(config WALConfig) (*WAL, error) {
 		isOpen:      true,
 		syncOnWrite: config.SyncOnWrite,
 		logger:      config.Logger,
+		activeTxs:   make(map[uint64]bool),
+		nextTxID:    1,
 	}
 
 	// If the file is new, write the header
@@ -128,22 +136,167 @@ func (w *WAL) Close() error {
 	if err := w.writer.Flush(); err != nil {
 		return fmt.Errorf("failed to flush WAL: %w", err)
 	}
+	
+	// Force sync to ensure all data is written to disk
+	if err := w.file.Sync(); err != nil {
+		w.logger.Warn("Failed to sync WAL during close: %v", err)
+		// Continue with close operation despite sync failure
+	}
 
 	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("failed to close WAL file: %w", err)
 	}
-
-	w.logger.Info("Closed WAL at %s", w.path)
+	
+	// Update the WAL file with the latest transaction ID on next open
+	w.logger.Info("Closed WAL at %s (next transaction ID: %d)", w.path, w.nextTxID)
 	return nil
 }
 
-// RecordPut records a key-value pair in the WAL
-func (w *WAL) RecordPut(key, value []byte) error {
+// BeginTransaction starts a new transaction in the WAL and returns a transaction ID
+// If a specific txID is needed, it can be passed through the forceID parameter
+func (w *WAL) BeginTransaction() (uint64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.isOpen {
+		return 0, ErrWALClosed
+	}
+
+	txID := w.nextTxID
+	w.nextTxID++
+
+	// Record the transaction begin
+	record := WALRecord{
+		Type:      RecordTxBegin,
+		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
+	}
+
+	if err := w.writeRecord(record); err != nil {
+		return 0, fmt.Errorf("failed to write transaction begin record: %w", err)
+	}
+
+	// Track the active transaction
+	w.activeTxs[txID] = true
+
+	w.logger.Debug("Started transaction %d", txID)
+	return txID, nil
+}
+
+// BeginTransactionWithID starts a new transaction in the WAL with the specified ID
+func (w *WAL) BeginTransactionWithID(txID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	if !w.isOpen {
 		return ErrWALClosed
+	}
+
+	// Record the transaction begin
+	record := WALRecord{
+		Type:      RecordTxBegin,
+		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
+	}
+
+	if err := w.writeRecord(record); err != nil {
+		return fmt.Errorf("failed to write transaction begin record: %w", err)
+	}
+
+	// Track the active transaction
+	w.activeTxs[txID] = true
+
+	// Update nextTxID if needed
+	if txID >= w.nextTxID {
+		w.nextTxID = txID + 1
+	}
+
+	w.logger.Debug("Started transaction %d (with specified ID)", txID)
+	return nil
+}
+
+// CommitTransaction commits a transaction in the WAL
+func (w *WAL) CommitTransaction(txID uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.isOpen {
+		return ErrWALClosed
+	}
+
+	// Check if transaction exists
+	if !w.activeTxs[txID] {
+		return fmt.Errorf("transaction %d not found or already committed", txID)
+	}
+
+	// Record the transaction commit
+	record := WALRecord{
+		Type:      RecordTxCommit,
+		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
+	}
+
+	if err := w.writeRecord(record); err != nil {
+		return fmt.Errorf("failed to write transaction commit record: %w", err)
+	}
+
+	// Remove from active transactions
+	delete(w.activeTxs, txID)
+
+	w.logger.Debug("Committed transaction %d", txID)
+	return nil
+}
+
+// RollbackTransaction rolls back a transaction in the WAL
+func (w *WAL) RollbackTransaction(txID uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.isOpen {
+		return ErrWALClosed
+	}
+
+	// Check if transaction exists
+	if !w.activeTxs[txID] {
+		return fmt.Errorf("transaction %d not found or already committed/rolled back", txID)
+	}
+
+	// Record the transaction rollback
+	record := WALRecord{
+		Type:      RecordTxRollback,
+		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
+	}
+
+	if err := w.writeRecord(record); err != nil {
+		return fmt.Errorf("failed to write transaction rollback record: %w", err)
+	}
+
+	// Remove from active transactions
+	delete(w.activeTxs, txID)
+
+	w.logger.Debug("Rolled back transaction %d", txID)
+	return nil
+}
+
+// RecordPut records a key-value pair in the WAL
+// If txID is 0, the operation is not part of a transaction
+func (w *WAL) RecordPut(key, value []byte) error {
+	return w.RecordPutInTransaction(key, value, 0)
+}
+
+// RecordPutInTransaction records a key-value pair in the WAL as part of a transaction
+func (w *WAL) RecordPutInTransaction(key, value []byte, txID uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.isOpen {
+		return ErrWALClosed
+	}
+
+	// If transaction ID is provided, verify it exists
+	if txID > 0 && !w.activeTxs[txID] {
+		return fmt.Errorf("transaction %d not found or already committed", txID)
 	}
 
 	record := WALRecord{
@@ -151,18 +304,25 @@ func (w *WAL) RecordPut(key, value []byte) error {
 		Key:       key,
 		Value:     value,
 		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
 	}
 
 	if err := w.writeRecord(record); err != nil {
 		return fmt.Errorf("failed to write put record: %w", err)
 	}
 
-	w.logger.Debug("Recorded PUT operation for key of size %d", len(key))
+	w.logger.Debug("Recorded PUT operation for key of size %d, txID: %d", len(key), txID)
 	return nil
 }
 
 // RecordDelete records a key deletion in the WAL
+// If txID is 0, the operation is not part of a transaction
 func (w *WAL) RecordDelete(key []byte) error {
+	return w.RecordDeleteInTransaction(key, 0)
+}
+
+// RecordDeleteInTransaction records a key deletion in the WAL as part of a transaction
+func (w *WAL) RecordDeleteInTransaction(key []byte, txID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -170,18 +330,24 @@ func (w *WAL) RecordDelete(key []byte) error {
 		return ErrWALClosed
 	}
 
+	// If transaction ID is provided, verify it exists
+	if txID > 0 && !w.activeTxs[txID] {
+		return fmt.Errorf("transaction %d not found or already committed", txID)
+	}
+
 	record := WALRecord{
 		Type:      RecordDelete,
 		Key:       key,
 		Value:     nil,
 		Timestamp: time.Now().UnixNano(),
+		TxID:      txID,
 	}
 
 	if err := w.writeRecord(record); err != nil {
 		return fmt.Errorf("failed to write delete record: %w", err)
 	}
 
-	w.logger.Debug("Recorded DELETE operation for key of size %d", len(key))
+	w.logger.Debug("Recorded DELETE operation for key of size %d, txID: %d", len(key), txID)
 	return nil
 }
 
@@ -220,15 +386,76 @@ func (w *WAL) Replay(memTable *MemTable) error {
 		return fmt.Errorf("failed to flush WAL before replay: %w", err)
 	}
 
+	// First, check the version to determine header size
+	if _, err := w.file.Seek(4, io.SeekStart); err != nil { // Skip magic number
+		return fmt.Errorf("failed to seek past magic number: %w", err)
+	}
+	
+	var version uint16
+	if err := binary.Read(w.file, binary.LittleEndian, &version); err != nil {
+		return fmt.Errorf("failed to read version: %w", err)
+	}
+	
+	// Determine the header size based on version
+	headerSize := 6 // Magic (4) + Version (2) for v1
+	if version == 2 {
+		headerSize = 14 // Magic (4) + Version (2) + NextTxID (8) for v2
+	}
+	
 	// Seek to the beginning of the file, after the header
-	if _, err := w.file.Seek(6, io.SeekStart); err != nil {
+	if _, err := w.file.Seek(int64(headerSize), io.SeekStart); err != nil {
 		return fmt.Errorf("failed to seek to WAL data: %w", err)
 	}
 
 	reader := bufio.NewReader(w.file)
 	recordCount := 0
 	applyCount := 0
-
+	
+	// Track transaction status
+	completedTxs := make(map[uint64]bool)  // Committed transactions
+	rolledBackTxs := make(map[uint64]bool) // Rolled back transactions
+	activeTxs := make(map[uint64]bool)     // Active (uncommitted) transactions
+	
+	// First pass: scan to identify transaction status
+	firstPassPos, err := w.file.Seek(int64(headerSize), io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("failed to seek to WAL data for first pass: %w", err)
+	}
+	
+	reader = bufio.NewReader(w.file)
+	
+	// First pass to determine transaction status
+	for {
+		record, err := w.readRecord(reader)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			w.logger.Warn("Error reading WAL record during first pass: %v", err)
+			continue
+		}
+		
+		switch record.Type {
+		case RecordTxBegin:
+			activeTxs[record.TxID] = true
+		case RecordTxCommit:
+			delete(activeTxs, record.TxID)
+			completedTxs[record.TxID] = true
+		case RecordTxRollback:
+			delete(activeTxs, record.TxID)
+			rolledBackTxs[record.TxID] = true
+		}
+	}
+	
+	// Second pass: replay records
+	_, err = w.file.Seek(firstPassPos, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("failed to reset file position for second pass: %w", err)
+	}
+	
+	reader = bufio.NewReader(w.file)
+	
+	// Process operations based on transaction status
 	for {
 		record, err := w.readRecord(reader)
 		if err == io.EOF {
@@ -240,25 +467,76 @@ func (w *WAL) Replay(memTable *MemTable) error {
 		}
 
 		recordCount++
-
-		// Apply the record to the MemTable
-		switch record.Type {
-		case RecordPut:
-			if err := memTable.Put(record.Key, record.Value); err != nil {
-				w.logger.Warn("Failed to apply PUT record: %v", err)
-				continue
-			}
-		case RecordDelete:
-			if err := memTable.Delete(record.Key); err != nil {
-				w.logger.Warn("Failed to apply DELETE record: %v", err)
-				continue
-			}
-		default:
-			w.logger.Warn("Unknown record type: %d", record.Type)
+		
+		// Skip transaction control records (BEGIN/COMMIT/ROLLBACK)
+		if record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
 			continue
 		}
+		
+		// Skip records from rolled back transactions
+		if record.TxID > 0 && rolledBackTxs[record.TxID] {
+			w.logger.Debug("Skipping record from rolled back transaction %d", record.TxID)
+			continue
+		}
+		
+		// Skip records from uncommitted transactions
+		if record.TxID > 0 && activeTxs[record.TxID] {
+			w.logger.Debug("Skipping record from uncommitted transaction %d", record.TxID)
+			continue
+		}
+		
+		// Apply standalone records (txID=0) or records from committed transactions
+		if record.TxID == 0 || completedTxs[record.TxID] {
+			// Apply the record to the MemTable
+			switch record.Type {
+			case RecordPut:
+				if err := memTable.Put(record.Key, record.Value); err != nil {
+					w.logger.Warn("Failed to apply PUT record: %v", err)
+					continue
+				}
+			case RecordDelete:
+				if err := memTable.Delete(record.Key); err != nil {
+					w.logger.Warn("Failed to apply DELETE record: %v", err)
+					continue
+				}
+			default:
+				w.logger.Warn("Unknown record type: %d", record.Type)
+				continue
+			}
+			
+			applyCount++
+		}
+		
+		// Track highest transaction ID seen in any record (during main loop)
+		if record.TxID > 0 && record.TxID >= w.nextTxID {
+			w.nextTxID = record.TxID + 1
+			w.logger.Debug("Updated nextTxID to %d based on record with txID=%d", w.nextTxID, record.TxID)
+		}
+	}
 
-		applyCount++
+	// Restore any active transactions that were not completed
+	for txID := range activeTxs {
+		w.activeTxs[txID] = true
+	}
+	
+	// Double-check to ensure nextTxID is properly updated based on all transaction records
+	for txID := range completedTxs {
+		if txID >= w.nextTxID {
+			w.nextTxID = txID + 1
+			w.logger.Debug("Updated nextTxID to %d based on completed txID=%d", w.nextTxID, txID)
+		}
+	}
+	for txID := range rolledBackTxs {
+		if txID >= w.nextTxID {
+			w.nextTxID = txID + 1
+			w.logger.Debug("Updated nextTxID to %d based on rolled back txID=%d", w.nextTxID, txID)
+		}
+	}
+	for txID := range activeTxs {
+		if txID >= w.nextTxID {
+			w.nextTxID = txID + 1
+			w.logger.Debug("Updated nextTxID to %d based on active txID=%d", w.nextTxID, txID)
+		}
 	}
 
 	// Seek back to the end of the file for future writes
@@ -266,7 +544,8 @@ func (w *WAL) Replay(memTable *MemTable) error {
 		return fmt.Errorf("failed to seek to end of WAL: %w", err)
 	}
 
-	w.logger.Info("Replayed %d of %d records from WAL", applyCount, recordCount)
+	w.logger.Info("Replayed %d of %d records from WAL (committed txs: %d, rolled back: %d, incomplete: %d)",
+		applyCount, recordCount, len(completedTxs), len(rolledBackTxs), len(activeTxs))
 	return nil
 }
 
@@ -316,6 +595,11 @@ func (w *WAL) writeHeader() error {
 	if err := binary.Write(w.writer, binary.LittleEndian, WALVersion); err != nil {
 		return err
 	}
+	
+	// In version 2+, also write the next transaction ID
+	if err := binary.Write(w.writer, binary.LittleEndian, w.nextTxID); err != nil {
+		return err
+	}
 
 	if err := w.writer.Flush(); err != nil {
 		return err
@@ -353,7 +637,23 @@ func (w *WAL) verifyHeader() error {
 		return err
 	}
 
-	if version != WALVersion {
+	// Handle version compatibility
+	if version == 1 {
+		// Version 1 doesn't store transaction ID, we'll discover it during replay
+		w.logger.Info("WAL version 1 detected, transaction IDs will be determined during replay")
+	} else if version == 2 {
+		// Version 2 stores the next transaction ID
+		var nextTxID uint64
+		if err := binary.Read(w.file, binary.LittleEndian, &nextTxID); err != nil {
+			return err
+		}
+		
+		// Only update if the stored ID is higher
+		if nextTxID > w.nextTxID {
+			w.nextTxID = nextTxID
+			w.logger.Info("Restored transaction ID counter to %d from WAL header", nextTxID)
+		}
+	} else {
 		return ErrWALCorrupted
 	}
 
@@ -370,8 +670,12 @@ func (w *WAL) writeRecord(record WALRecord) error {
 	// Calculate total record size
 	totalSize := 1 + // Type
 		8 + // Timestamp
-		4 + // Key length
-		len(record.Key)
+		8   // TxID (always present now)
+
+	// Add key/value sizes for operations that use them
+	if record.Type == RecordPut || record.Type == RecordDelete {
+		totalSize += 4 + len(record.Key) // Key length + key
+	}
 
 	if record.Type == RecordPut {
 		totalSize += 4 + len(record.Value) // Value length + value
@@ -382,8 +686,13 @@ func (w *WAL) writeRecord(record WALRecord) error {
 	crc := crc32.NewIEEE()
 	crc.Write([]byte{byte(record.Type)})
 	binary.Write(crc, binary.LittleEndian, record.Timestamp)
-	binary.Write(crc, binary.LittleEndian, uint32(len(record.Key)))
-	crc.Write(record.Key)
+	binary.Write(crc, binary.LittleEndian, record.TxID)
+
+	// Add key/value to CRC for operations that use them
+	if record.Type == RecordPut || record.Type == RecordDelete {
+		binary.Write(crc, binary.LittleEndian, uint32(len(record.Key)))
+		crc.Write(record.Key)
+	}
 
 	if record.Type == RecordPut {
 		binary.Write(crc, binary.LittleEndian, uint32(len(record.Value)))
@@ -412,12 +721,19 @@ func (w *WAL) writeRecord(record WALRecord) error {
 		return err
 	}
 
-	// Write key length and key
-	if err := binary.Write(w.writer, binary.LittleEndian, uint32(len(record.Key))); err != nil {
+	// Write transaction ID
+	if err := binary.Write(w.writer, binary.LittleEndian, record.TxID); err != nil {
 		return err
 	}
-	if _, err := w.writer.Write(record.Key); err != nil {
-		return err
+
+	// Write key length and key for operations that use them
+	if record.Type == RecordPut || record.Type == RecordDelete {
+		if err := binary.Write(w.writer, binary.LittleEndian, uint32(len(record.Key))); err != nil {
+			return err
+		}
+		if _, err := w.writer.Write(record.Key); err != nil {
+			return err
+		}
 	}
 
 	// Write value length and value if it's a PUT
@@ -469,7 +785,9 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 	record.Type = RecordType(recordTypeByte)
 
 	// Validate record type
-	if record.Type != RecordPut && record.Type != RecordDelete {
+	if record.Type != RecordPut && record.Type != RecordDelete && 
+	   record.Type != RecordTxBegin && record.Type != RecordTxCommit && 
+	   record.Type != RecordTxRollback {
 		return record, ErrInvalidWALRecord
 	}
 
@@ -478,30 +796,38 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 		return record, err
 	}
 
-	// Read key length
-	var keyLength uint32
-	if err := binary.Read(reader, binary.LittleEndian, &keyLength); err != nil {
+	// Read transaction ID
+	if err := binary.Read(reader, binary.LittleEndian, &record.TxID); err != nil {
 		return record, err
 	}
 
-	// Read key
-	record.Key = make([]byte, keyLength)
-	if _, err := io.ReadFull(reader, record.Key); err != nil {
-		return record, err
-	}
-
-	// Read value if it's a PUT
-	if record.Type == RecordPut {
-		// Read value length
-		var valueLength uint32
-		if err := binary.Read(reader, binary.LittleEndian, &valueLength); err != nil {
+	// For operations with key/value, read those fields
+	if record.Type == RecordPut || record.Type == RecordDelete {
+		// Read key length
+		var keyLength uint32
+		if err := binary.Read(reader, binary.LittleEndian, &keyLength); err != nil {
 			return record, err
 		}
 
-		// Read value
-		record.Value = make([]byte, valueLength)
-		if _, err := io.ReadFull(reader, record.Value); err != nil {
+		// Read key
+		record.Key = make([]byte, keyLength)
+		if _, err := io.ReadFull(reader, record.Key); err != nil {
 			return record, err
+		}
+
+		// Read value if it's a PUT
+		if record.Type == RecordPut {
+			// Read value length
+			var valueLength uint32
+			if err := binary.Read(reader, binary.LittleEndian, &valueLength); err != nil {
+				return record, err
+			}
+
+			// Read value
+			record.Value = make([]byte, valueLength)
+			if _, err := io.ReadFull(reader, record.Value); err != nil {
+				return record, err
+			}
 		}
 	}
 
@@ -509,8 +835,12 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 	crc := crc32.NewIEEE()
 	crc.Write([]byte{byte(record.Type)})
 	binary.Write(crc, binary.LittleEndian, record.Timestamp)
-	binary.Write(crc, binary.LittleEndian, keyLength)
-	crc.Write(record.Key)
+	binary.Write(crc, binary.LittleEndian, record.TxID)
+
+	if record.Type == RecordPut || record.Type == RecordDelete {
+		binary.Write(crc, binary.LittleEndian, uint32(len(record.Key)))
+		crc.Write(record.Key)
+	}
 
 	if record.Type == RecordPut {
 		binary.Write(crc, binary.LittleEndian, uint32(len(record.Value)))

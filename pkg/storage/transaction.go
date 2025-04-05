@@ -40,10 +40,11 @@ type TransactionManager struct {
 	nextTxID           uint64
 	activeTransactions map[uint64]*Transaction
 	isOpen             bool // Whether the transaction manager is open
+	wal                *WAL // Reference to the WAL for recording transaction boundaries
 }
 
 // NewTransactionManager creates a new transaction manager
-func NewTransactionManager(dataDir string, logger model.Logger) (*TransactionManager, error) {
+func NewTransactionManager(dataDir string, logger model.Logger, wal *WAL) (*TransactionManager, error) {
 	if logger == nil {
 		logger = model.DefaultLoggerInstance
 	}
@@ -54,13 +55,33 @@ func NewTransactionManager(dataDir string, logger model.Logger) (*TransactionMan
 		return nil, fmt.Errorf("failed to create transaction directory: %w", err)
 	}
 
+	// Initial transaction ID
+	nextTxID := uint64(1)
+	
+	// Check if we have a persisted transaction state file
+	stateFilePath := filepath.Join(txDir, "tx_state")
+	if stateData, err := os.ReadFile(stateFilePath); err == nil {
+		// File exists, try to parse the transaction ID
+		if id, err := strconv.ParseUint(string(stateData), 10, 64); err == nil && id > 0 {
+			nextTxID = id
+			logger.Info("Restored transaction ID from state file: %d", nextTxID)
+		}
+	}
+	
+	// Also check if WAL has a higher transaction ID
+	if wal != nil && wal.nextTxID > nextTxID {
+		logger.Info("Using higher transaction ID from WAL: %d (was %d)", wal.nextTxID, nextTxID)
+		nextTxID = wal.nextTxID
+	}
+
 	tm := &TransactionManager{
 		dataDir:            dataDir,
 		transactionDir:     txDir,
 		logger:             logger,
-		nextTxID:           1,
+		nextTxID:           nextTxID,
 		activeTransactions: make(map[uint64]*Transaction),
 		isOpen:             true,
+		wal:                wal,
 	}
 
 	// Recover any incomplete transactions
@@ -91,6 +112,15 @@ func (tm *TransactionManager) Begin() *Transaction {
 	txID := tm.nextTxID
 	tm.nextTxID++
 
+	// Record transaction begin in WAL if available
+	if tm.wal != nil {
+		// Use the new method to force a specific transaction ID in the WAL
+		if err := tm.wal.BeginTransactionWithID(txID); err != nil {
+			tm.logger.Error("Failed to record transaction begin in WAL: %v", err)
+			// Continue with file-based transaction only
+		}
+	}
+
 	status := atomic.Bool{}
 	status.Store(false) // Not committed initially
 
@@ -102,6 +132,8 @@ func (tm *TransactionManager) Begin() *Transaction {
 	}
 
 	tm.activeTransactions[txID] = tx
+	tm.logger.Debug("Started transaction %d", txID)
+	
 	return tx
 }
 
@@ -125,13 +157,24 @@ func (tm *TransactionManager) Close() error {
 
 	// Clear active transactions
 	tm.activeTransactions = make(map[uint64]*Transaction)
+	
+	// Persist the next transaction ID to a file for recovery
+	stateFilePath := filepath.Join(tm.transactionDir, "tx_state")
+	if err := os.WriteFile(stateFilePath, []byte(fmt.Sprintf("%d", tm.nextTxID)), 0644); err != nil {
+		tm.logger.Warn("Failed to persist transaction manager state: %v", err)
+	} else {
+		tm.logger.Debug("Persisted transaction manager state (nextTxID: %d)", tm.nextTxID)
+	}
 
 	return nil
 }
 
 // recoverTransactions recovers any incomplete transactions from disk
 func (tm *TransactionManager) recoverTransactions() error {
-	// List all transaction files
+	// Get WAL transaction status first if available
+	walTxs := make(map[uint64]string) // txID -> status (committed, rolledback, active)
+	
+	// Process file-based transactions
 	entries, err := os.ReadDir(tm.transactionDir)
 	if err != nil {
 		return fmt.Errorf("failed to read transaction directory: %w", err)
@@ -154,6 +197,43 @@ func (tm *TransactionManager) recoverTransactions() error {
 			_, commitErr := os.Stat(commitPath)
 			isCommitted := commitErr == nil
 
+			// Determine and log the transaction status
+			var status string
+			if isCommitted {
+				status = "committed"
+			} else {
+				status = "uncommitted"
+			}
+			
+			// If we have WAL information about this transaction, check for consistency
+			if walStatus, exists := walTxs[txID]; exists && walStatus != status {
+				tm.logger.Warn("Transaction %d status mismatch: WAL says %s, file says %s",
+					txID, walStatus, status)
+				
+				// WAL is the source of truth for transaction boundaries, but files
+				// are the source of truth for the actual operations
+				if walStatus == "committed" && status == "uncommitted" {
+					// WAL says committed but file doesn't have commit marker
+					// This could happen if we crashed after WAL commit but before file commit
+					// Create the missing commit marker
+					tm.logger.Info("Creating missing commit marker for transaction %d", txID)
+					commitFile, err := os.Create(commitPath)
+					if err != nil {
+						tm.logger.Error("Failed to create commit marker: %v", err)
+					} else {
+						fmt.Fprintf(commitFile, "%d", time.Now().UnixNano())
+						commitFile.Close()
+						isCommitted = true
+						status = "committed"
+					}
+				} else if walStatus == "rolledback" && status == "uncommitted" {
+					// WAL says rolledback, we should clean up the file
+					tm.logger.Info("Removing rolled back transaction %d file", txID)
+					os.Remove(filepath.Join(tm.transactionDir, entry.Name()))
+					continue
+				}
+			}
+
 			if isCommitted {
 				// Process committed transaction
 				if err := tm.applyTransaction(txID); err != nil {
@@ -170,6 +250,13 @@ func (tm *TransactionManager) recoverTransactions() error {
 				} else {
 					// Successfully rolled back, clean up file
 					os.Remove(filepath.Join(tm.transactionDir, entry.Name()))
+				}
+				
+				// Also rollback in WAL if needed and not already rolled back
+				if tm.wal != nil && walTxs[txID] != "rolledback" {
+					if err := tm.wal.RollbackTransaction(txID); err != nil {
+						tm.logger.Error("Failed to rollback transaction %d in WAL: %v", txID, err)
+					}
 				}
 			}
 
@@ -344,6 +431,29 @@ func (tx *Transaction) AddOperation(op TransactionOperation) {
 		return
 	}
 
+	// Record data operations in WAL if it supports transactional operations
+	if tx.manager.wal != nil && op.Type == "add" || op.Type == "remove" {
+		// For SSTable operations, we can't directly map them to WAL operations,
+		// but we can record them in the WAL in a way that preserves transaction boundaries
+		switch op.Type {
+		case "add":
+			// For "add" operations, we can log a put with a special key pattern
+			key := []byte(fmt.Sprintf("__tx_op_%s_%d", op.Target, op.ID))
+			value := []byte(fmt.Sprintf("%s:%s:%d", op.Type, op.Target, op.ID))
+			if err := tx.manager.wal.RecordPutInTransaction(key, value, tx.id); err != nil {
+				tx.manager.logger.Error("Failed to record operation in WAL: %v", err)
+				// Continue with file-based transaction
+			}
+		case "remove":
+			// For "remove" operations, we can log a delete with a special key pattern
+			key := []byte(fmt.Sprintf("__tx_op_%s_%d", op.Target, op.ID))
+			if err := tx.manager.wal.RecordDeleteInTransaction(key, tx.id); err != nil {
+				tx.manager.logger.Error("Failed to record operation in WAL: %v", err)
+				// Continue with file-based transaction
+			}
+		}
+	}
+
 	tx.operations = append(tx.operations, op)
 }
 
@@ -355,6 +465,14 @@ func (tx *Transaction) Commit() error {
 	if tx.commitStatus.Load() {
 		// Already committed
 		return nil
+	}
+
+	// Record transaction commit in WAL first if available
+	if tx.manager.wal != nil {
+		if err := tx.manager.wal.CommitTransaction(tx.id); err != nil {
+			tx.manager.logger.Error("Failed to record transaction commit in WAL: %v", err)
+			// Continue with file-based transaction commit
+		}
 	}
 
 	// Write transaction log file
@@ -425,6 +543,7 @@ func (tx *Transaction) Commit() error {
 	delete(tx.manager.activeTransactions, tx.id)
 	tx.manager.mu.Unlock()
 
+	tx.manager.logger.Debug("Committed transaction %d", tx.id)
 	return nil
 }
 
@@ -437,12 +556,21 @@ func (tx *Transaction) Rollback() error {
 		// Already committed, cannot rollback
 		return fmt.Errorf("transaction already committed")
 	}
+	
+	// Record transaction rollback in WAL if available
+	if tx.manager.wal != nil {
+		if err := tx.manager.wal.RollbackTransaction(tx.id); err != nil {
+			tx.manager.logger.Error("Failed to record transaction rollback in WAL: %v", err)
+			// Continue with file-based transaction rollback
+		}
+	}
 
 	// Remove from active transactions
 	tx.manager.mu.Lock()
 	delete(tx.manager.activeTransactions, tx.id)
 	tx.manager.mu.Unlock()
 
+	tx.manager.logger.Debug("Rolled back transaction %d", tx.id)
 	return nil
 }
 

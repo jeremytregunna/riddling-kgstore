@@ -123,8 +123,8 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		Comparator: config.Comparator,
 	})
 
-	// Create the transaction manager
-	txManager, err := NewTransactionManager(config.DataDir, config.Logger)
+	// Create the transaction manager with WAL reference
+	txManager, err := NewTransactionManager(config.DataDir, config.Logger, wal)
 	if err != nil {
 		wal.Close()
 		return nil, fmt.Errorf("failed to create transaction manager: %w", err)
