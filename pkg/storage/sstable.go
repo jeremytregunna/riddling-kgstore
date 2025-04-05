@@ -70,9 +70,22 @@ type SSTableConfig struct {
 	Comparator Comparator   // Comparator for key comparison
 }
 
-// CreateSSTable creates a new SSTable from a MemTable using an atomic operation
+// CreateSSTOptions defines options for SSTable creation
+type CreateSSTOptions struct {
+	// IncludeDeleted determines whether to include deleted entries as tombstones
+	IncludeDeleted bool
+}
+
+// DefaultCreateSSTOptions returns default options for creating an SSTable
+func DefaultCreateSSTOptions() CreateSSTOptions {
+	return CreateSSTOptions{
+		IncludeDeleted: false, // By default, don't include deleted entries
+	}
+}
+
+// CreateSSTableWithOptions creates a new SSTable from a MemTable with specific options
 // to ensure that crashes during creation don't leave partial SSTables
-func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
+func CreateSSTableWithOptions(config SSTableConfig, memTable *MemTable, options CreateSSTOptions) (*SSTable, error) {
 	if memTable == nil {
 		return nil, errors.New("cannot create SSTable from nil MemTable")
 	}
@@ -119,8 +132,15 @@ func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 		indexCache: make(map[string]uint64),
 	}
 
-	// Get entries from the MemTable
-	entries := memTable.GetEntries()
+	// Get entries from the MemTable based on options
+	var entries [][]byte
+	if options.IncludeDeleted {
+		// Use version-aware entries that include tombstones
+		entries = memTable.GetEntriesWithMetadata()
+	} else {
+		// Use traditional entries without deleted records
+		entries = memTable.GetEntries()
+	}
 	
 	// Flag to track if we should clean up temporary files
 	var cleanupTmp bool = true
@@ -190,6 +210,13 @@ func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
 	return sst, nil
 }
 
+// CreateSSTable creates a new SSTable from a MemTable using an atomic operation
+// to ensure that crashes during creation don't leave partial SSTables.
+// This version does not include tombstones for deleted entries.
+func CreateSSTable(config SSTableConfig, memTable *MemTable) (*SSTable, error) {
+	return CreateSSTableWithOptions(config, memTable, DefaultCreateSSTOptions())
+}
+
 // atomicMoveFile atomically moves a file from src to dst
 func atomicMoveFile(src, dst string) error {
 	// Rename is atomic on most filesystems
@@ -245,6 +272,7 @@ func OpenSSTable(config SSTableConfig) (*SSTable, error) {
 }
 
 // Get retrieves a value from the SSTable by key
+// With versioned records, this now checks tombstone status
 func (sst *SSTable) Get(key []byte) ([]byte, error) {
 	if key == nil {
 		return nil, ErrNilKey
@@ -264,21 +292,32 @@ func (sst *SSTable) Get(key []byte) ([]byte, error) {
 	}
 
 	// Look up key in index
-	offset, err := sst.findKeyInIndex(key)
+	offset, version, err := sst.findKeyInIndex(key)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read value from data file at offset
-	value, err := sst.readValueAtOffset(offset)
+	// Read value and tombstone status from data file at offset
+	value, isDeleted, valueVersion, err := sst.readValueAtOffset(offset)
 	if err != nil {
 		return nil, err
+	}
+
+	// If it's a tombstone (deleted record), return not found error
+	if isDeleted {
+		return nil, ErrKeyNotFoundInSSTable
+	}
+
+	// Verify version in data file matches what's in index
+	if version != valueVersion {
+		return nil, fmt.Errorf("version mismatch: index has %d, data has %d", version, valueVersion)
 	}
 
 	return value, nil
 }
 
 // Contains checks if a key exists in the SSTable
+// With versioned records, this checks if the key exists and is not a tombstone
 func (sst *SSTable) Contains(key []byte) (bool, error) {
 	if key == nil {
 		return false, nil
@@ -298,11 +337,22 @@ func (sst *SSTable) Contains(key []byte) (bool, error) {
 	}
 
 	// Look up key in index
-	_, err := sst.findKeyInIndex(key)
+	offset, _, err := sst.findKeyInIndex(key)
 	if err == ErrKeyNotFoundInSSTable {
 		return false, nil
 	} else if err != nil {
 		return false, err
+	}
+
+	// Check if it's a tombstone
+	_, isDeleted, _, err := sst.readValueAtOffset(offset)
+	if err != nil {
+		return false, err
+	}
+
+	// If it's a tombstone, consider it as not existing
+	if isDeleted {
+		return false, nil
 	}
 
 	return true, nil
@@ -353,9 +403,15 @@ func (sst *SSTable) MaxKey() []byte {
 // buildFromEntries builds the SSTable files from a set of key-value entries
 func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	// Ensure entries is not empty and contains key-value pairs
-	if len(entries) == 0 || len(entries)%2 != 0 {
-		return errors.New("invalid entries: must be non-empty and contain key-value pairs")
+	// We support two formats:
+	// 1. Regular format: key, value pairs (len % 2 == 0)
+	// 2. Versioned format: key, value, version, isDeleted (len % 4 == 0)
+	if len(entries) == 0 || (len(entries)%2 != 0 && len(entries)%4 != 0) {
+		return errors.New("invalid entries: must be non-empty and contain valid entry format")
 	}
+	
+	// Determine if we're using versioned records
+	isVersioned := len(entries)%4 == 0 && len(entries) > 0
 
 	// Create data file
 	dataFile, err := os.Create(sst.dataFile)
@@ -385,17 +441,31 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	// Reserve space for header in data file
 	headerSize := 14 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2)
 
-	// Get min and max keys
+	// Get min and max keys from entries
 	minKey := entries[0]
 	maxKey := entries[0]
 
-	for i := 0; i < len(entries); i += 2 {
-		key := entries[i]
-		if sst.comparator(key, minKey) < 0 {
-			minKey = key
+	if isVersioned {
+		// Versioned format: keys at positions 0, 4, 8, etc.
+		for i := 0; i < len(entries); i += 4 {
+			key := entries[i]
+			if sst.comparator(key, minKey) < 0 {
+				minKey = key
+			}
+			if sst.comparator(key, maxKey) > 0 {
+				maxKey = key
+			}
 		}
-		if sst.comparator(key, maxKey) > 0 {
-			maxKey = key
+	} else {
+		// Regular format: keys at positions 0, 2, 4, etc.
+		for i := 0; i < len(entries); i += 2 {
+			key := entries[i]
+			if sst.comparator(key, minKey) < 0 {
+				minKey = key
+			}
+			if sst.comparator(key, maxKey) > 0 {
+				maxKey = key
+			}
 		}
 	}
 
@@ -408,7 +478,12 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	binary.Write(dataWriter, binary.LittleEndian, SSTableVersion)
 
 	// Get number of key-value pairs
-	keyCount := uint32(len(entries) / 2)
+	var keyCount uint32
+	if isVersioned {
+		keyCount = uint32(len(entries) / 4)
+	} else {
+		keyCount = uint32(len(entries) / 2)
+	}
 
 	// Write key count
 	binary.Write(dataWriter, binary.LittleEndian, keyCount)
@@ -422,23 +497,64 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	dataWriter.Write(maxKey)
 
 	// Write key-value pairs to data file and build index
-	for i := 0; i < len(entries); i += 2 {
-		key := entries[i]
-		value := entries[i+1]
+	if isVersioned {
+		// Versioned format
+		for i := 0; i < len(entries); i += 4 {
+			key := entries[i]
+			value := entries[i+1]
+			version := entries[i+2]
+			isDeleted := entries[i+3]
+			
+			// If it's a tombstone and we're filtering, skip it
+			if isDeleted[0] != 0 {
+				// Skip this tombstone if we didn't request them
+				continue
+			}
 
-		// Write index entry: key length, key, data offset
-		binary.Write(indexWriter, binary.LittleEndian, uint16(len(key)))
-		indexWriter.Write(key)
-		binary.Write(indexWriter, binary.LittleEndian, dataOffset)
+			// Write index entry: key length, key, data offset, version
+			binary.Write(indexWriter, binary.LittleEndian, uint16(len(key)))
+			indexWriter.Write(key)
+			binary.Write(indexWriter, binary.LittleEndian, dataOffset)
+			indexWriter.Write(version) // 8 bytes for version
 
-		// Write data entry: key length, key, value length, value
-		binary.Write(dataWriter, binary.LittleEndian, uint16(len(key)))
-		dataWriter.Write(key)
-		binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
-		dataWriter.Write(value)
+			// Write data entry: key length, key, value length, value, version, isDeleted flag
+			binary.Write(dataWriter, binary.LittleEndian, uint16(len(key)))
+			dataWriter.Write(key)
+			binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
+			dataWriter.Write(value)
+			dataWriter.Write(version) // 8 bytes for version
+			dataWriter.Write(isDeleted) // 1 byte for isDeleted flag
 
-		// Update offset for the next entry
-		dataOffset += uint64(2) + uint64(len(key)) + uint64(4) + uint64(len(value))
+			// Update offset for the next entry
+			dataOffset += uint64(2) + uint64(len(key)) + uint64(4) + uint64(len(value)) + uint64(8) + uint64(1)
+		}
+	} else {
+		// Standard format
+		for i := 0; i < len(entries); i += 2 {
+			key := entries[i]
+			value := entries[i+1]
+			
+			// Default values for version and isDeleted
+			versionBytes := make([]byte, 8)
+			isDeletedByte := []byte{0} // Not deleted
+			
+			// Write index entry: key length, key, data offset, dummy version
+			binary.Write(indexWriter, binary.LittleEndian, uint16(len(key)))
+			indexWriter.Write(key)
+			binary.Write(indexWriter, binary.LittleEndian, dataOffset)
+			indexWriter.Write(versionBytes) // 8 bytes for version (zeros)
+
+			// Write data entry: key length, key, value length, value, dummy version, no deletion
+			binary.Write(dataWriter, binary.LittleEndian, uint16(len(key)))
+			dataWriter.Write(key)
+			binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
+			dataWriter.Write(value)
+			dataWriter.Write(versionBytes) // 8 bytes for version (zeros)
+			dataWriter.Write(isDeletedByte) // 1 byte for isDeleted flag (not deleted)
+
+			// Update offset for the next entry
+			dataOffset += uint64(2) + uint64(len(key)) + uint64(4) + uint64(len(value)) + uint64(8) + uint64(1)
+		}
 	}
 
 	// Flush writers to ensure all data is written
@@ -579,36 +695,42 @@ func (sst *SSTable) readHeader() error {
 
 // findKeyInIndex finds a key in the SSTable index
 // Returns the offset in the data file where the key's value is stored
-func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
-	// Check cache first
+// and the version number of the entry
+func (sst *SSTable) findKeyInIndex(key []byte) (uint64, uint64, error) {
+	// We'll disable the cache for now since it doesn't include version info
+	// In a real implementation, we'd update the cache structure to include version
+	/*
 	keyStr := string(key)
 	if offset, ok := sst.indexCache[keyStr]; ok {
-		return offset, nil
+		return offset, 0, nil
 	}
+	*/
 
 	// Open index file
 	indexFile, err := os.Open(sst.indexFile)
 	if err != nil {
-		return 0, fmt.Errorf("failed to open index file: %w", err)
+		return 0, 0, fmt.Errorf("failed to open index file: %w", err)
 	}
 	defer indexFile.Close()
 
 	// Read the entire index into memory for binary search
 	indexData, err := io.ReadAll(indexFile)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read index file: %w", err)
+		return 0, 0, fmt.Errorf("failed to read index file: %w", err)
 	}
 
 	// If the index is empty or just has a header, there are no entries
 	if len(indexData) <= 2 {
-		return 0, ErrKeyNotFoundInSSTable
+		return 0, 0, ErrKeyNotFoundInSSTable
 	}
 
 	// Implement a true binary search through the index entries
-	var entrySize int // size of a single index entry = 2 bytes (key length) + key + 8 bytes (offset)
+	// Now each entry includes version (8 bytes)
+	var entrySize int // size of a single index entry = 2 bytes (key length) + key + 8 bytes (offset) + 8 bytes (version)
 	var entries []int // positions of index entries in the file
 	var found bool
 	var offset uint64
+	var version uint64
 
 	// First pass: build a list of entry positions
 	pos := 0
@@ -622,14 +744,14 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 
 		keyLen := binary.LittleEndian.Uint16(indexData[pos:])
 
-		// Calculate entry size and move to next entry
-		entrySize = 2 + int(keyLen) + 8
+		// Calculate entry size and move to next entry - now includes 8 bytes for version
+		entrySize = 2 + int(keyLen) + 8 + 8
 		pos += entrySize
 	}
 
 	// No entries found
 	if len(entries) == 0 {
-		return 0, ErrKeyNotFoundInSSTable
+		return 0, 0, ErrKeyNotFoundInSSTable
 	}
 
 	// Binary search through the entries
@@ -661,16 +783,25 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 		}
 
 		indexOffset := binary.LittleEndian.Uint64(indexData[pos:])
+		pos += 8
+
+		// Make sure there's enough data for the version
+		if pos+8 > len(indexData) {
+			break
+		}
+
+		indexVersion := binary.LittleEndian.Uint64(indexData[pos:])
 
 		// Compare keys
 		cmp := sst.comparator(key, indexKey)
 		if cmp == 0 {
 			// Key found
 			offset = indexOffset
+			version = indexVersion
 			found = true
 
-			// Cache the result
-			sst.indexCache[keyStr] = offset
+			// Disabled caching for now
+			// sst.indexCache[string(key)] = offset
 
 			break
 		} else if cmp < 0 {
@@ -683,87 +814,103 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, error) {
 	}
 
 	if !found {
-		return 0, ErrKeyNotFoundInSSTable
+		return 0, 0, ErrKeyNotFoundInSSTable
 	}
 
-	return offset, nil
+	return offset, version, nil
 }
 
 // readValueAtOffset reads a value from the data file at the specified offset
-func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, error) {
+// Now also returns the tombstone flag and version information
+func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, bool, uint64, error) {
 	// Open data file
 	dataFile, err := os.Open(sst.dataFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open data file: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to open data file: %w", err)
 	}
 	defer dataFile.Close()
 
 	// Get file size to make sure we don't read past the end
 	fileInfo, err := dataFile.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get file info: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to get file info: %w", err)
 	}
 
 	fileSize := fileInfo.Size()
 	if int64(offset) >= fileSize {
-		return nil, fmt.Errorf("offset %d is beyond file size %d", offset, fileSize)
+		return nil, false, 0, fmt.Errorf("offset %d is beyond file size %d", offset, fileSize)
 	}
 
 	// Seek to the offset
 	if _, err := dataFile.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek to offset %d: %w", offset, err)
+		return nil, false, 0, fmt.Errorf("failed to seek to offset %d: %w", offset, err)
 	}
 
 	// Read key length
 	var keyLen uint16
 	if err := binary.Read(dataFile, binary.LittleEndian, &keyLen); err != nil {
-		return nil, fmt.Errorf("failed to read key length: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to read key length: %w", err)
 	}
 
 	// Verify key length is reasonable (sanity check)
 	if keyLen > 1024 { // Assume keys are not larger than 1KB
-		return nil, fmt.Errorf("key length %d appears invalid", keyLen)
+		return nil, false, 0, fmt.Errorf("key length %d appears invalid", keyLen)
 	}
 
 	// Validate key length
 	if int64(offset)+int64(2)+int64(keyLen) >= fileSize {
-		return nil, fmt.Errorf("key length %d would read past end of file", keyLen)
+		return nil, false, 0, fmt.Errorf("key length %d would read past end of file", keyLen)
 	}
 
 	// Skip key
 	if _, err := dataFile.Seek(int64(keyLen), io.SeekCurrent); err != nil {
-		return nil, fmt.Errorf("failed to skip key: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to skip key: %w", err)
 	}
 
 	// Read value length
 	var valueLen uint32
 	if err := binary.Read(dataFile, binary.LittleEndian, &valueLen); err != nil {
-		return nil, fmt.Errorf("failed to read value length: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to read value length: %w", err)
 	}
 
 	// Verify value length is reasonable (sanity check)
 	if valueLen > 10*1024*1024 { // 10MB max
-		return nil, fmt.Errorf("value length %d appears invalid (exceeds max size)", valueLen)
+		return nil, false, 0, fmt.Errorf("value length %d appears invalid (exceeds max size)", valueLen)
 	}
 
 	// Validate value length
 	currentPos, err := dataFile.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current position: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to get current position: %w", err)
 	}
 
 	if currentPos+int64(valueLen) > fileSize {
-		return nil, fmt.Errorf("value length %d would read past end of file (at pos %d of size %d)",
+		return nil, false, 0, fmt.Errorf("value length %d would read past end of file (at pos %d of size %d)",
 			valueLen, currentPos, fileSize)
 	}
 
 	// Read value
 	value := make([]byte, valueLen)
 	if _, err := io.ReadFull(dataFile, value); err != nil {
-		return nil, fmt.Errorf("failed to read value: %w", err)
+		return nil, false, 0, fmt.Errorf("failed to read value: %w", err)
 	}
 
-	return value, nil
+	// Read version (8 bytes)
+	versionBytes := make([]byte, 8)
+	if _, err := io.ReadFull(dataFile, versionBytes); err != nil {
+		return nil, false, 0, fmt.Errorf("failed to read version: %w", err)
+	}
+	version := binary.LittleEndian.Uint64(versionBytes)
+
+	// Read isDeleted flag (1 byte)
+	isDeletedByte := make([]byte, 1)
+	if _, err := io.ReadFull(dataFile, isDeletedByte); err != nil {
+		return nil, false, 0, fmt.Errorf("failed to read isDeleted flag: %w", err)
+	}
+	
+	isDeleted := isDeletedByte[0] != 0
+
+	return value, isDeleted, version, nil
 }
 
 // Iterator returns an iterator for the SSTable
@@ -893,12 +1040,35 @@ func (iter *SSTableIterator) Next() error {
 		iter.valid = false
 		return fmt.Errorf("failed to read value: %w", err)
 	}
+	
+	// Read version (8 bytes)
+	versionBytes := make([]byte, 8)
+	if _, err := io.ReadFull(iter.dataFile, versionBytes); err != nil {
+		iter.valid = false
+		return fmt.Errorf("failed to read version: %w", err)
+	}
+	
+	// Read isDeleted flag (1 byte)
+	isDeletedByte := make([]byte, 1)
+	if _, err := io.ReadFull(iter.dataFile, isDeletedByte); err != nil {
+		iter.valid = false
+		return fmt.Errorf("failed to read isDeleted flag: %w", err)
+	}
+	
+	isDeleted := isDeletedByte[0] != 0
 
 	// Update iterator state
+	// Skip tombstones - don't include deleted entries in iteration
+	if isDeleted {
+		// Skip this entry and move to the next
+		iter.position += uint64(2) + uint64(keyLen) + uint64(4) + uint64(valueLen) + uint64(8) + uint64(1)
+		return iter.Next()
+	}
+
 	iter.key = key
 	iter.value = value
 	iter.valid = true
-	iter.position += uint64(2) + uint64(keyLen) + uint64(4) + uint64(valueLen)
+	iter.position += uint64(2) + uint64(keyLen) + uint64(4) + uint64(valueLen) + uint64(8) + uint64(1)
 
 	return nil
 }
@@ -918,7 +1088,7 @@ func (iter *SSTableIterator) Seek(key []byte) error {
 	}
 
 	// Find key in index
-	offset, err := iter.sst.findKeyInIndex(key)
+	offset, _, err := iter.sst.findKeyInIndex(key)
 	if err == nil {
 		// Key found exactly, position iterator there
 		iter.position = offset

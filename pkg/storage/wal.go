@@ -46,6 +46,7 @@ type WALRecord struct {
 	Value       []byte
 	Timestamp   int64
 	TxID        uint64  // Transaction ID for transaction-related records
+	Version     uint64  // Version for versioned records
 }
 
 // WAL implements a Write-Ahead Log for durability
@@ -495,13 +496,23 @@ func (w *WAL) Replay(memTable *MemTable) error {
 		// Apply standalone records
 		switch record.Type {
 		case RecordPut:
-			if err := memTable.Put(record.Key, record.Value); err != nil {
+			// For non-transaction operations, assign monotonically increasing versions
+			// based on WAL replay order
+			w.nextTxID++
+			version := w.nextTxID
+			
+			if err := memTable.PutWithVersion(record.Key, record.Value, version); err != nil {
 				w.logger.Warn("Failed to apply standalone PUT record: %v", err)
 				continue
 			}
 			applyCount++
 		case RecordDelete:
-			if err := memTable.Delete(record.Key); err != nil {
+			// For non-transaction operations, assign monotonically increasing versions
+			// based on WAL replay order
+			w.nextTxID++
+			version := w.nextTxID
+			
+			if err := memTable.DeleteWithVersion(record.Key, version); err != nil {
 				w.logger.Warn("Failed to apply standalone DELETE record: %v", err)
 				continue
 			}
@@ -536,9 +547,13 @@ func (w *WAL) Replay(memTable *MemTable) error {
 				var err error
 				switch op.Type {
 				case RecordPut:
-					err = tempMemTable.Put(op.Key, op.Value)
+					// Use the transaction ID as the version for consistency
+					version := txID
+					err = tempMemTable.PutWithVersion(op.Key, op.Value, version)
 				case RecordDelete:
-					err = tempMemTable.Delete(op.Key)
+					// Use the transaction ID as the version for consistency
+					version := txID
+					err = tempMemTable.DeleteWithVersion(op.Key, version)
 				}
 				
 				// If any operation fails, log it and skip the transaction
@@ -556,9 +571,17 @@ func (w *WAL) Replay(memTable *MemTable) error {
 				var err error
 				switch op.Type {
 				case RecordPut:
-					err = memTable.Put(op.Key, op.Value)
+					// Use the transaction ID as the version
+					// This ensures all operations in the same transaction have the same version
+					// for proper atomicity
+					version := txID
+					err = memTable.PutWithVersion(op.Key, op.Value, version)
 				case RecordDelete:
-					err = memTable.Delete(op.Key)
+					// Use the transaction ID as the version
+					// This ensures all operations in the same transaction have the same version
+					// for proper atomicity
+					version := txID
+					err = memTable.DeleteWithVersion(op.Key, version)
 				}
 				
 				if err != nil {

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"sync"
@@ -52,9 +53,10 @@ func DefaultConfig() MemTableConfig {
 type skipNode struct {
 	key       []byte
 	value     []byte
-	size      uint64 // size in bytes
+	size      uint64    // size in bytes
 	forward   []*skipNode
-	isDeleted bool // Marker for lazy deletion
+	isDeleted bool      // Marker for lazy deletion
+	version   uint64    // Version number for this record
 }
 
 // MemTable uses a skip list to store key-value pairs in memory in a sorted order
@@ -151,6 +153,12 @@ func (m *MemTable) findNodeAndPrevs(key []byte) (*skipNode, []*skipNode) {
 
 // Put adds or updates a key-value pair in the MemTable
 func (m *MemTable) Put(key, value []byte) error {
+	return m.PutWithVersion(key, value, 0)
+}
+
+// PutWithVersion adds or updates a key-value pair in the MemTable with a specific version
+// If version is 0, it will use the next auto-incremented version
+func (m *MemTable) PutWithVersion(key, value []byte, version uint64) error {
 	if key == nil {
 		return ErrNilKey
 	}
@@ -170,19 +178,31 @@ func (m *MemTable) Put(key, value []byte) error {
 	// Find the node and its predecessors at each level
 	node, prevs := m.findNodeAndPrevs(key)
 
+	// Determine version to use
+	currentVersion := version
+	if currentVersion == 0 {
+		// Auto-increment version if not specified
+		m.currentVersion++
+		currentVersion = m.currentVersion
+	} else if currentVersion > m.currentVersion {
+		// If a higher version is manually specified, update our counter
+		m.currentVersion = currentVersion
+	}
+
 	// If the key already exists
 	if node != nil {
 		// Handle existing nodes marked as deleted
 		if node.isDeleted {
-			// Unmark as deleted and update value
+			// Unmark as deleted and update value with new version
 			node.isDeleted = false
 			node.value = append([]byte{}, value...) // Create a copy
+			node.version = currentVersion
 			oldSize := node.size
 			node.size = entrySize
 			m.size = m.size - oldSize + entrySize
 			m.count++ // Increment count since we're reusing a previously deleted node
-			m.currentVersion++
-			m.logger.Debug("Reactivated deleted entry in MemTable, key size: %d, value size: %d", len(key), len(value))
+			m.logger.Debug("Reactivated deleted entry in MemTable with version %d, key size: %d, value size: %d", 
+				currentVersion, len(key), len(value))
 			return nil
 		}
 
@@ -193,12 +213,13 @@ func (m *MemTable) Put(key, value []byte) error {
 			return ErrMemTableFull
 		}
 
-		// Update the value and size
+		// Update the value, size, and version
 		node.value = append([]byte{}, value...) // Create a copy
+		node.version = currentVersion
 		node.size = entrySize
 		m.size = m.size - oldSize + entrySize
-		m.currentVersion++
-		m.logger.Debug("Updated entry in MemTable, key size: %d, value size: %d", len(key), len(value))
+		m.logger.Debug("Updated entry in MemTable with version %d, key size: %d, value size: %d", 
+			currentVersion, len(key), len(value))
 		return nil
 	}
 
@@ -214,6 +235,7 @@ func (m *MemTable) Put(key, value []byte) error {
 		value:   append([]byte{}, value...), // Create a copy
 		size:    entrySize,
 		forward: make([]*skipNode, height),
+		version: currentVersion,
 	}
 
 	// Update the skip list height if necessary
@@ -233,9 +255,9 @@ func (m *MemTable) Put(key, value []byte) error {
 	// Update size and count
 	m.size += entrySize
 	m.count++
-	m.currentVersion++
 
-	m.logger.Debug("Added new entry to MemTable, key size: %d, value size: %d", len(key), len(value))
+	m.logger.Debug("Added new entry to MemTable with version %d, key size: %d, value size: %d", 
+		currentVersion, len(key), len(value))
 	return nil
 }
 
@@ -260,7 +282,14 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 
 // Delete marks a key as deleted by setting the isDeleted flag
 // In this implementation, we use lazy deletion to avoid reorganizing the skip list
+// We also assign a new version number to the deletion to track its order in the version history
 func (m *MemTable) Delete(key []byte) error {
+	return m.DeleteWithVersion(key, 0)
+}
+
+// DeleteWithVersion marks a key as deleted with a specific version number
+// If version is 0, it will use the next auto-incremented version
+func (m *MemTable) DeleteWithVersion(key []byte, version uint64) error {
 	if key == nil {
 		return ErrNilKey
 	}
@@ -279,13 +308,24 @@ func (m *MemTable) Delete(key []byte) error {
 		return nil
 	}
 
-	// Mark the node as deleted and update size and count
+	// Determine version to use
+	currentVersion := version
+	if currentVersion == 0 {
+		// Auto-increment version if not specified
+		m.currentVersion++
+		currentVersion = m.currentVersion
+	} else if currentVersion > m.currentVersion {
+		// If a higher version is manually specified, update our counter
+		m.currentVersion = currentVersion
+	}
+
+	// Mark the node as deleted, update version, and update size and count
 	node.isDeleted = true
+	node.version = currentVersion
 	m.size -= node.size
 	m.count--
-	m.currentVersion++
 
-	m.logger.Debug("Deleted entry from MemTable with key size: %d", len(key))
+	m.logger.Debug("Deleted entry from MemTable with version %d, key size: %d", currentVersion, len(key))
 	return nil
 }
 
@@ -351,7 +391,8 @@ func (m *MemTable) IsFlushed() bool {
 }
 
 // GetEntries returns all entries in the MemTable in sorted order
-// This is typically used when flushing the MemTable to an SSTable
+// with only key-value pairs (for backward compatibility with tests)
+// This does not include deleted entries
 func (m *MemTable) GetEntries() [][]byte {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -367,6 +408,58 @@ func (m *MemTable) GetEntries() [][]byte {
 			entries = append(entries, append([]byte{}, current.key...))
 			entries = append(entries, append([]byte{}, current.value...))
 		}
+		current = current.forward[0]
+	}
+
+	return entries
+}
+
+// GetEntriesWithMetadata returns all entries in the MemTable in sorted order
+// including metadata like version and deletion flag
+// This is used for the new versioned record implementation
+func (m *MemTable) GetEntriesWithMetadata() [][]byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Create a slice to hold entries - each entry consists of:
+	// [0]: key
+	// [1]: value
+	// [2]: version (as 8-byte binary)
+	// [3]: isDeleted flag (as 1-byte binary)
+	// So 4 entries per key-value pair, not just 2
+	totalEntries := m.count
+	
+	// Count all nodes, including deleted ones (that haven't been flushed yet)
+	if m.head != nil {
+		totalEntries = 0
+		current := m.head.forward[0]
+		for current != nil {
+			totalEntries++
+			current = current.forward[0]
+		}
+	}
+	
+	entries := make([][]byte, 0, totalEntries*4)
+
+	// Traverse the skip list at level 0 (which contains all nodes)
+	current := m.head.forward[0]
+	for current != nil {
+		// Add key, value, version, and deletion flag to the results
+		entries = append(entries, append([]byte{}, current.key...))
+		entries = append(entries, append([]byte{}, current.value...))
+		
+		// Convert version to 8-byte array
+		versionBytes := make([]byte, 8)
+		binary.LittleEndian.PutUint64(versionBytes, current.version)
+		entries = append(entries, versionBytes)
+		
+		// Convert deletion flag to 1-byte array
+		var deletedFlag byte = 0
+		if current.isDeleted {
+			deletedFlag = 1
+		}
+		entries = append(entries, []byte{deletedFlag})
+		
 		current = current.forward[0]
 	}
 
