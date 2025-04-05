@@ -33,6 +33,12 @@ type StorageEngine struct {
 	nextSSTableID    uint64              // Next SSTable ID to use
 	leveledCompactor *LeveledCompaction  // Manages the leveled compaction strategy
 	txManager        *TransactionManager // Transaction manager for atomic operations
+	
+	// Two-phase deletion mechanism for safe SSTable removal
+	deletionMu        sync.Mutex                  // Mutex for deletion operations (separate from main engine lock)
+	pendingDeletions  map[uint64]*SSTable         // SSTables pending deletion (phase 1: logical deletion)
+	deletionTime      map[uint64]time.Time        // When each SSTable was marked for deletion
+	deletionExit      chan struct{}               // Channel to signal deletion worker to exit
 }
 
 // EngineConfig holds configuration options for the storage engine
@@ -60,6 +66,10 @@ type EngineConfig struct {
 
 	// Use lock-free MemTable implementation
 	UseLockFreeMemTable bool
+	
+	// Time to wait before physically deleting SSTables after they're removed from the index
+	// This allows ongoing read operations to complete when SSTables are being removed during compaction
+	SSTableDeletionDelay time.Duration
 }
 
 // DefaultEngineConfig returns a default configuration for the storage engine
@@ -73,6 +83,7 @@ func DefaultEngineConfig() EngineConfig {
 		BackgroundCompaction: true,
 		BloomFilterFPR:       0.01, // 1% false positive rate
 		UseLockFreeMemTable:  false, // Default to original MemTable for backward compatibility
+		SSTableDeletionDelay: 30 * time.Second, // Default 30-second delay for SSTable deletion
 	}
 }
 
@@ -157,10 +168,16 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		nextSSTableID:    1,
 		leveledCompactor: NewLeveledCompaction(),
 		txManager:        txManager,
+		pendingDeletions: make(map[uint64]*SSTable),
+		deletionTime:     make(map[uint64]time.Time),
+		deletionExit:     make(chan struct{}),
 	}
 
 	// Set up the condition variable for compaction
 	engine.compactionCond = sync.NewCond(&engine.mu)
+	
+	// Start the deletion worker that handles the second phase of deletion
+	go engine.deletionWorker()
 
 	// Load existing SSTables
 	if err := engine.loadSSTables(); err != nil {
@@ -215,6 +232,9 @@ func (e *StorageEngine) Close() error {
 	// Signal compaction to stop
 	close(e.compactionDone)
 	e.compactionCond.Broadcast()
+	
+	// Signal deletion worker to stop
+	close(e.deletionExit)
 
 	// Flush the current MemTable to disk if it's not empty
 	if e.memTable.EntryCount() > 0 {
@@ -241,6 +261,29 @@ func (e *StorageEngine) Close() error {
 			e.logger.Error("Failed to close SSTable: %v", err)
 		}
 	}
+	
+	// Immediately close any SSTables pending deletion
+	e.deletionMu.Lock()
+	for id, sstable := range e.pendingDeletions {
+		if err := sstable.Close(); err != nil {
+			e.logger.Error("Failed to close pending deletion SSTable %d: %v", id, err)
+		}
+		
+		// Also delete the files since we're closing
+		sstableDir := filepath.Join(e.config.DataDir, "sstables")
+		dataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", id))
+		indexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", id))
+		filterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", id))
+		
+		for _, file := range []string{dataFile, indexFile, filterFile} {
+			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+				e.logger.Warn("Failed to delete file %s: %v", file, err)
+			}
+		}
+	}
+	e.pendingDeletions = nil
+	e.deletionTime = nil
+	e.deletionMu.Unlock()
 
 	// Close the transaction manager
 	if e.txManager != nil {
@@ -339,7 +382,7 @@ func (e *StorageEngine) Get(key []byte) ([]byte, error) {
 		}
 	}
 
-	// Try to get the value from SSTables (newest to oldest)
+	// Try to get the value from active SSTables (newest to oldest)
 	for i := len(e.sstables) - 1; i >= 0; i-- {
 		value, err := e.sstables[i].Get(key)
 		if err == nil {
@@ -348,7 +391,49 @@ func (e *StorageEngine) Get(key []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+	
+	// If not found in active SSTables, also check those pending deletion
+	// This ensures reads can still succeed during the deletion delay period
+	value, err = e.getFromPendingDeletionSSTables(key)
+	if err == nil {
+		// Found in an SSTable that's pending deletion
+		return value, nil
+	} else if err != ErrKeyNotFound {
+		return nil, err
+	}
 
+	return nil, ErrKeyNotFound
+}
+
+// getFromPendingDeletionSSTables checks SSTables pending deletion for a key
+// This is part of the two-phase deletion approach that ensures reads can
+// still succeed during the deletion delay period
+func (e *StorageEngine) getFromPendingDeletionSSTables(key []byte) ([]byte, error) {
+	// Acquire deletion mutex to access pending deletion SSTables
+	e.deletionMu.Lock()
+	
+	// Create a snapshot of the pending deletions to avoid long lock hold
+	pendingSSTables := make([]*SSTable, 0, len(e.pendingDeletions))
+	for _, sstable := range e.pendingDeletions {
+		pendingSSTables = append(pendingSSTables, sstable)
+	}
+	e.deletionMu.Unlock()
+	
+	// Sort by ID in descending order to check newest first
+	sort.Slice(pendingSSTables, func(i, j int) bool {
+		return pendingSSTables[i].ID() > pendingSSTables[j].ID()
+	})
+	
+	// Check each pending SSTable (newest to oldest)
+	for _, sstable := range pendingSSTables {
+		value, err := sstable.Get(key)
+		if err == nil {
+			return value, nil
+		} else if err != ErrKeyNotFoundInSSTable {
+			return nil, err
+		}
+	}
+	
 	return nil, ErrKeyNotFound
 }
 
@@ -432,7 +517,7 @@ func (e *StorageEngine) Contains(key []byte) (bool, error) {
 		}
 	}
 
-	// Check SSTables (newest to oldest)
+	// Check active SSTables (newest to oldest)
 	for i := len(e.sstables) - 1; i >= 0; i-- {
 		contains, err := e.sstables[i].Contains(key)
 		if err != nil {
@@ -442,7 +527,47 @@ func (e *StorageEngine) Contains(key []byte) (bool, error) {
 			return true, nil
 		}
 	}
+	
+	// Also check SSTables pending deletion
+	contains, err := e.containsInPendingDeletionSSTables(key)
+	if err != nil {
+		return false, fmt.Errorf("error checking pending deletion SSTables: %w", err)
+	}
+	if contains {
+		return true, nil
+	}
 
+	return false, nil
+}
+
+// containsInPendingDeletionSSTables checks if a key exists in any SSTable pending deletion
+func (e *StorageEngine) containsInPendingDeletionSSTables(key []byte) (bool, error) {
+	// Acquire deletion mutex to access pending deletion SSTables
+	e.deletionMu.Lock()
+	
+	// Create a snapshot of the pending deletions to avoid long lock hold
+	pendingSSTables := make([]*SSTable, 0, len(e.pendingDeletions))
+	for _, sstable := range e.pendingDeletions {
+		pendingSSTables = append(pendingSSTables, sstable)
+	}
+	e.deletionMu.Unlock()
+	
+	// Sort by ID in descending order to check newest first
+	sort.Slice(pendingSSTables, func(i, j int) bool {
+		return pendingSSTables[i].ID() > pendingSSTables[j].ID()
+	})
+	
+	// Check each pending SSTable (newest to oldest)
+	for _, sstable := range pendingSSTables {
+		contains, err := sstable.Contains(key)
+		if err != nil {
+			return false, err
+		}
+		if contains {
+			return true, nil
+		}
+	}
+	
 	return false, nil
 }
 
@@ -571,6 +696,11 @@ func (e *StorageEngine) Stats() EngineStats {
 		}
 		levelSizes[level] = levelSize
 	}
+	
+	// Get count of pending deletions
+	e.deletionMu.Lock()
+	pendingDeletions := len(e.pendingDeletions)
+	e.deletionMu.Unlock()
 
 	stats := EngineStats{
 		IsOpen:            e.isOpen,
@@ -581,6 +711,7 @@ func (e *StorageEngine) Stats() EngineStats {
 		DataDirectorySize: e.getDataDirectorySizeLocked(),
 		LevelCounts:       levelCounts,
 		LevelSizes:        levelSizes,
+		PendingDeletions:  pendingDeletions,
 	}
 
 	return stats
@@ -1072,9 +1203,10 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	e.sstables = newSSTables
 	e.nextSSTableID++
 
-	// Close old SSTables since they've been removed
+	// Mark old SSTables for deletion instead of immediately closing them
+	// This allows ongoing reads to complete even after compaction finishes
 	for _, sstable := range allSSTablesToRemove {
-		sstable.Close()
+		e.markSSTableForDeletion(sstable)
 	}
 
 	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys",
@@ -1236,9 +1368,10 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 	e.sstables = newSSTables
 	e.nextSSTableID++
 
-	// Close old SSTables since they've been removed
+	// Mark old SSTables for deletion instead of immediately closing them
+	// This allows ongoing reads to complete even after compaction finishes
 	for _, sstable := range allSSTablesToRemove {
-		sstable.Close()
+		e.markSSTableForDeletion(sstable)
 	}
 
 	// In a full implementation, we might want to check if the resulting compaction
@@ -1278,4 +1411,86 @@ type EngineStats struct {
 	DataDirectorySize int64    // Total size of the data directory in bytes
 	LevelCounts       []int    // Number of SSTables at each level
 	LevelSizes        []uint64 // Size of each level in bytes
+	PendingDeletions  int      // Number of SSTables pending deletion
+}
+
+// deletionWorker runs in the background to handle the second phase of SSTable deletion
+// It periodically checks for SSTables that have been pending deletion for longer than 
+// the configured delay and physically deletes them
+func (e *StorageEngine) deletionWorker() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			e.cleanupPendingDeletions()
+		case <-e.deletionExit:
+			return // Exit signal received
+		}
+	}
+}
+
+// cleanupPendingDeletions checks for SSTables that have been marked for deletion
+// and removes them if they've been pending for longer than the configured delay
+func (e *StorageEngine) cleanupPendingDeletions() {
+	e.deletionMu.Lock()
+	defer e.deletionMu.Unlock()
+
+	now := time.Now()
+	var toDelete []uint64
+
+	// Find SSTables that have been pending deletion long enough
+	for id, timestamp := range e.deletionTime {
+		if now.Sub(timestamp) >= e.config.SSTableDeletionDelay {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	// Delete them one by one
+	for _, id := range toDelete {
+		sstable, exists := e.pendingDeletions[id]
+		if !exists {
+			continue
+		}
+
+		// Close the SSTable
+		if err := sstable.Close(); err != nil {
+			e.logger.Error("Failed to close SSTable %d during cleanup: %v", id, err)
+			continue
+		}
+
+		// Delete the SSTable files
+		sstableDir := filepath.Join(e.config.DataDir, "sstables")
+		dataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", id))
+		indexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", id))
+		filterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", id))
+
+		for _, file := range []string{dataFile, indexFile, filterFile} {
+			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+				e.logger.Warn("Failed to delete file %s: %v", file, err)
+			}
+		}
+
+		// Remove from our tracking maps
+		delete(e.pendingDeletions, id)
+		delete(e.deletionTime, id)
+		
+		e.logger.Info("Physically deleted SSTable %d after deletion delay", id)
+	}
+}
+
+// markSSTableForDeletion adds an SSTable to the pending deletion queue (phase 1)
+// This logically deletes the SSTable while allowing ongoing reads to complete
+func (e *StorageEngine) markSSTableForDeletion(sstable *SSTable) {
+	id := sstable.ID()
+	e.deletionMu.Lock()
+	defer e.deletionMu.Unlock()
+	
+	// Add to pending deletions if not already there
+	if _, exists := e.pendingDeletions[id]; !exists {
+		e.pendingDeletions[id] = sstable
+		e.deletionTime[id] = time.Now()
+		e.logger.Debug("Marked SSTable %d for deletion with delay %v", id, e.config.SSTableDeletionDelay)
+	}
 }
