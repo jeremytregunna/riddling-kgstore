@@ -79,54 +79,45 @@ func newPropertyIndex(storage *StorageEngine, logger model.Logger, entityType Pr
 // Format: {prefix}:{propertyName}:{valueType}:{propertyValue}:{entityID}
 // This enables efficient range scans by property name and value
 func (idx *propertyIndex) makeKey(propertyName, propertyValue, entityID []byte, valueType PropertyValueType) []byte {
-	// Create a composite key
-	key := make([]byte, 0, len(idx.keyPrefix)+len(propertyName)+1+1+len(propertyValue)+1+len(entityID))
-	key = append(key, idx.keyPrefix...)
-	key = append(key, propertyName...)
-	key = append(key, ':')
-	key = append(key, byte(valueType))
-	key = append(key, ':')
-	key = append(key, propertyValue...)
-	key = append(key, ':')
-	key = append(key, entityID...)
-	return key
+	// Create a composite key using the serialization functions
+	return model.SerializeCompositeKey(
+		idx.keyPrefix,
+		propertyName,
+		[]byte{byte(valueType)},
+		propertyValue,
+		entityID,
+	)
 }
 
 // makePropertyPrefix creates a prefix key for range scans by property name
 // Format: {prefix}:{propertyName}:
 func (idx *propertyIndex) makePropertyPrefix(propertyName []byte) []byte {
-	key := make([]byte, 0, len(idx.keyPrefix)+len(propertyName)+1)
-	key = append(key, idx.keyPrefix...)
-	key = append(key, propertyName...)
-	key = append(key, ':')
-	return key
+	result := model.SerializeCompositeKey(idx.keyPrefix, propertyName)
+	return append(result, ':') // Add trailing colon for prefix scan
 }
 
 // makePropertyValuePrefix creates a prefix key for range scans by property name and value
 // Format: {prefix}:{propertyName}:{valueType}:{propertyValue}:
 func (idx *propertyIndex) makePropertyValuePrefix(propertyName, propertyValue []byte, valueType PropertyValueType) []byte {
-	key := make([]byte, 0, len(idx.keyPrefix)+len(propertyName)+1+1+len(propertyValue)+1)
-	key = append(key, idx.keyPrefix...)
-	key = append(key, propertyName...)
-	key = append(key, ':')
-	key = append(key, byte(valueType))
-	key = append(key, ':')
-	key = append(key, propertyValue...)
-	key = append(key, ':')
-	return key
+	result := model.SerializeCompositeKey(
+		idx.keyPrefix,
+		propertyName,
+		[]byte{byte(valueType)},
+		propertyValue,
+	)
+	return append(result, ':') // Add trailing colon for prefix scan
 }
 
 // extractEntityID extracts the entity ID from a composite key
 func (idx *propertyIndex) extractEntityID(key []byte) ([]byte, error) {
 	// The key format is {prefix}:{propertyName}:{valueType}:{propertyValue}:{entityID}
-	// Find the last ':' separator
-	lastSep := bytes.LastIndexByte(key, ':')
-	if lastSep == -1 || lastSep+1 >= len(key) {
+	parts := model.SplitCompositeKey(key)
+	if len(parts) < 5 {
 		return nil, errors.New("invalid key format for property index")
 	}
 	
-	// Return the part after the last ':'
-	return key[lastSep+1:], nil
+	// Return the last part (entity ID)
+	return parts[len(parts)-1], nil
 }
 
 // detectValueType tries to determine the value type based on its content

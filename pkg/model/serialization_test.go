@@ -218,8 +218,8 @@ func TestErrorCases(t *testing.T) {
 	invalidMagicData := make([]byte, 100)
 	copy(invalidMagicData, []byte{0, 0, 0, 0, 1, 0, TypeNode})
 	_, err = DeserializeNode(invalidMagicData)
-	if err != ErrInvalidSerializedData {
-		t.Errorf("Expected ErrInvalidSerializedData, got %v", err)
+	if err != ErrInvalidHeader {
+		t.Errorf("Expected ErrInvalidHeader, got %v", err)
 	}
 
 	// Test invalid version

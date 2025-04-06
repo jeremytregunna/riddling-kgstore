@@ -21,14 +21,207 @@ const (
 	TypeProperty uint8 = 3
 )
 
-// ErrInvalidSerializedData is returned when attempting to deserialize invalid data
-var ErrInvalidSerializedData = errors.New("invalid serialized data")
+// Common serialization errors
+var (
+	ErrInvalidSerializedData = errors.New("invalid serialized data")
+	ErrUnsupportedVersion    = errors.New("unsupported serialization version")
+	ErrInvalidEntityType     = errors.New("invalid entity type")
+	ErrInvalidHeader         = errors.New("invalid header")
+	ErrBufferTooSmall        = errors.New("buffer too small")
+)
 
-// ErrUnsupportedVersion is returned when attempting to deserialize data with an unsupported version
-var ErrUnsupportedVersion = errors.New("unsupported serialization version")
+// Header represents the standardized header for all serialized entities
+type SerializationHeader struct {
+	Magic   uint32
+	Version uint16
+	Type    uint8
+}
 
-// ErrInvalidEntityType is returned when encountering an invalid entity type during deserialization
-var ErrInvalidEntityType = errors.New("invalid entity type")
+// WriteHeader writes a standardized header to a buffer
+func WriteHeader(buf *bytes.Buffer, entityType uint8) error {
+	if err := binary.Write(buf, binary.LittleEndian, SerializationMagic); err != nil {
+		return err
+	}
+	if err := binary.Write(buf, binary.LittleEndian, SerializationVersion); err != nil {
+		return err
+	}
+	if err := binary.Write(buf, binary.LittleEndian, entityType); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReadHeader reads and validates a standardized header from a reader
+func ReadHeader(r io.Reader) (SerializationHeader, error) {
+	var header SerializationHeader
+
+	if err := binary.Read(r, binary.LittleEndian, &header.Magic); err != nil {
+		return header, err
+	}
+	if header.Magic != SerializationMagic {
+		return header, ErrInvalidHeader
+	}
+
+	if err := binary.Read(r, binary.LittleEndian, &header.Version); err != nil {
+		return header, err
+	}
+	if header.Version != SerializationVersion {
+		return header, ErrUnsupportedVersion
+	}
+
+	if err := binary.Read(r, binary.LittleEndian, &header.Type); err != nil {
+		return header, err
+	}
+
+	return header, nil
+}
+
+// WriteString writes a length-prefixed string to a buffer
+func WriteString(buf *bytes.Buffer, s string) error {
+	strBytes := []byte(s)
+	if err := binary.Write(buf, binary.LittleEndian, uint16(len(strBytes))); err != nil {
+		return err
+	}
+	_, err := buf.Write(strBytes)
+	return err
+}
+
+// ReadString reads a length-prefixed string from a reader
+func ReadString(r io.Reader) (string, error) {
+	var length uint16
+	if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
+		return "", err
+	}
+
+	strBytes := make([]byte, length)
+	if _, err := io.ReadFull(r, strBytes); err != nil {
+		return "", err
+	}
+
+	return string(strBytes), nil
+}
+
+// WriteStringMap writes a map of string key-value pairs to a buffer
+func WriteStringMap(buf *bytes.Buffer, m map[string]string) error {
+	// Write the count of items
+	if err := binary.Write(buf, binary.LittleEndian, uint16(len(m))); err != nil {
+		return err
+	}
+
+	// Write each key-value pair
+	for key, value := range m {
+		if err := WriteString(buf, key); err != nil {
+			return err
+		}
+		if err := WriteString(buf, value); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ReadStringMap reads a map of string key-value pairs from a reader
+func ReadStringMap(r io.Reader) (map[string]string, error) {
+	var count uint16
+	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return nil, err
+	}
+
+	m := make(map[string]string, count)
+	for i := uint16(0); i < count; i++ {
+		key, err := ReadString(r)
+		if err != nil {
+			return nil, err
+		}
+
+		value, err := ReadString(r)
+		if err != nil {
+			return nil, err
+		}
+
+		m[key] = value
+	}
+
+	return m, nil
+}
+
+// WriteUint64List writes a list of uint64 values to a buffer
+func WriteUint64List(buf *bytes.Buffer, ids []uint64) error {
+	// Write the count
+	if err := binary.Write(buf, binary.LittleEndian, uint32(len(ids))); err != nil {
+		return err
+	}
+
+	// Write each ID
+	for _, id := range ids {
+		if err := binary.Write(buf, binary.LittleEndian, id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ReadUint64List reads a list of uint64 values from a reader
+func ReadUint64List(r io.Reader) ([]uint64, error) {
+	var count uint32
+	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return nil, err
+	}
+
+	ids := make([]uint64, count)
+	for i := uint32(0); i < count; i++ {
+		if err := binary.Read(r, binary.LittleEndian, &ids[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	return ids, nil
+}
+
+// WriteBytesList writes a list of byte slices to a buffer
+func WriteBytesList(buf *bytes.Buffer, items [][]byte) error {
+	// Write the count
+	if err := binary.Write(buf, binary.LittleEndian, uint32(len(items))); err != nil {
+		return err
+	}
+
+	// Write each byte slice with its length prefix
+	for _, item := range items {
+		if err := binary.Write(buf, binary.LittleEndian, uint32(len(item))); err != nil {
+			return err
+		}
+		if _, err := buf.Write(item); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ReadBytesList reads a list of byte slices from a reader
+func ReadBytesList(r io.Reader) ([][]byte, error) {
+	var count uint32
+	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return nil, err
+	}
+
+	items := make([][]byte, count)
+	for i := uint32(0); i < count; i++ {
+		var length uint32
+		if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
+			return nil, err
+		}
+
+		items[i] = make([]byte, length)
+		if _, err := io.ReadFull(r, items[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	return items, nil
+}
 
 // SerializeNode serializes a Node into a binary format
 func SerializeNode(node *Node) ([]byte, error) {
@@ -39,31 +232,23 @@ func SerializeNode(node *Node) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write header
-	binary.Write(&buf, binary.LittleEndian, SerializationMagic)
-	binary.Write(&buf, binary.LittleEndian, SerializationVersion)
-	binary.Write(&buf, binary.LittleEndian, TypeNode)
+	if err := WriteHeader(&buf, TypeNode); err != nil {
+		return nil, err
+	}
 
-	// Write node ID and label
-	binary.Write(&buf, binary.LittleEndian, node.ID)
+	// Write node ID
+	if err := binary.Write(&buf, binary.LittleEndian, node.ID); err != nil {
+		return nil, err
+	}
 
-	// Write label length and label bytes
-	labelBytes := []byte(node.Label)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(labelBytes)))
-	buf.Write(labelBytes)
+	// Write label
+	if err := WriteString(&buf, node.Label); err != nil {
+		return nil, err
+	}
 
-	// Write property count
-	binary.Write(&buf, binary.LittleEndian, uint16(len(node.Properties)))
-
-	// Write each property
-	for key, value := range node.Properties {
-		keyBytes := []byte(key)
-		valueBytes := []byte(value)
-
-		binary.Write(&buf, binary.LittleEndian, uint16(len(keyBytes)))
-		buf.Write(keyBytes)
-
-		binary.Write(&buf, binary.LittleEndian, uint16(len(valueBytes)))
-		buf.Write(valueBytes)
+	// Write properties
+	if err := WriteStringMap(&buf, node.Properties); err != nil {
+		return nil, err
 	}
 
 	return buf.Bytes(), nil
@@ -78,28 +263,11 @@ func DeserializeNode(data []byte) (*Node, error) {
 	buf := bytes.NewReader(data)
 
 	// Read and validate header
-	var magic uint32
-	var version uint16
-	var entityType uint8
-
-	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
+	header, err := ReadHeader(buf)
+	if err != nil {
 		return nil, err
 	}
-	if magic != SerializationMagic {
-		return nil, ErrInvalidSerializedData
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
-		return nil, err
-	}
-	if version != SerializationVersion {
-		return nil, ErrUnsupportedVersion
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &entityType); err != nil {
-		return nil, err
-	}
-	if entityType != TypeNode {
+	if header.Type != TypeNode {
 		return nil, ErrInvalidEntityType
 	}
 
@@ -110,52 +278,22 @@ func DeserializeNode(data []byte) (*Node, error) {
 	}
 
 	// Read label
-	var labelLen uint16
-	if err := binary.Read(buf, binary.LittleEndian, &labelLen); err != nil {
+	label, err := ReadString(buf)
+	if err != nil {
 		return nil, err
 	}
-
-	labelBytes := make([]byte, labelLen)
-	if _, err := io.ReadFull(buf, labelBytes); err != nil {
-		return nil, err
-	}
-	label := string(labelBytes)
 
 	// Create node
 	node := NewNode(id, label)
 
 	// Read properties
-	var propCount uint16
-	if err := binary.Read(buf, binary.LittleEndian, &propCount); err != nil {
+	properties, err := ReadStringMap(buf)
+	if err != nil {
 		return nil, err
 	}
 
-	for i := uint16(0); i < propCount; i++ {
-		// Read key
-		var keyLen uint16
-		if err := binary.Read(buf, binary.LittleEndian, &keyLen); err != nil {
-			return nil, err
-		}
-
-		keyBytes := make([]byte, keyLen)
-		if _, err := io.ReadFull(buf, keyBytes); err != nil {
-			return nil, err
-		}
-		key := string(keyBytes)
-
-		// Read value
-		var valueLen uint16
-		if err := binary.Read(buf, binary.LittleEndian, &valueLen); err != nil {
-			return nil, err
-		}
-
-		valueBytes := make([]byte, valueLen)
-		if _, err := io.ReadFull(buf, valueBytes); err != nil {
-			return nil, err
-		}
-		value := string(valueBytes)
-
-		// Add property to node
+	// Add properties to node
+	for key, value := range properties {
 		node.AddProperty(key, value)
 	}
 
@@ -171,32 +309,26 @@ func SerializeEdge(edge *Edge) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write header
-	binary.Write(&buf, binary.LittleEndian, SerializationMagic)
-	binary.Write(&buf, binary.LittleEndian, SerializationVersion)
-	binary.Write(&buf, binary.LittleEndian, TypeEdge)
+	if err := WriteHeader(&buf, TypeEdge); err != nil {
+		return nil, err
+	}
 
 	// Write source and target IDs
-	binary.Write(&buf, binary.LittleEndian, edge.SourceID)
-	binary.Write(&buf, binary.LittleEndian, edge.TargetID)
+	if err := binary.Write(&buf, binary.LittleEndian, edge.SourceID); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, edge.TargetID); err != nil {
+		return nil, err
+	}
 
-	// Write label length and label bytes
-	labelBytes := []byte(edge.Label)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(labelBytes)))
-	buf.Write(labelBytes)
+	// Write label
+	if err := WriteString(&buf, edge.Label); err != nil {
+		return nil, err
+	}
 
-	// Write property count
-	binary.Write(&buf, binary.LittleEndian, uint16(len(edge.Properties)))
-
-	// Write each property
-	for key, value := range edge.Properties {
-		keyBytes := []byte(key)
-		valueBytes := []byte(value)
-
-		binary.Write(&buf, binary.LittleEndian, uint16(len(keyBytes)))
-		buf.Write(keyBytes)
-
-		binary.Write(&buf, binary.LittleEndian, uint16(len(valueBytes)))
-		buf.Write(valueBytes)
+	// Write properties
+	if err := WriteStringMap(&buf, edge.Properties); err != nil {
+		return nil, err
 	}
 
 	return buf.Bytes(), nil
@@ -211,28 +343,11 @@ func DeserializeEdge(data []byte) (*Edge, error) {
 	buf := bytes.NewReader(data)
 
 	// Read and validate header
-	var magic uint32
-	var version uint16
-	var entityType uint8
-
-	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
+	header, err := ReadHeader(buf)
+	if err != nil {
 		return nil, err
 	}
-	if magic != SerializationMagic {
-		return nil, ErrInvalidSerializedData
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
-		return nil, err
-	}
-	if version != SerializationVersion {
-		return nil, ErrUnsupportedVersion
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &entityType); err != nil {
-		return nil, err
-	}
-	if entityType != TypeEdge {
+	if header.Type != TypeEdge {
 		return nil, ErrInvalidEntityType
 	}
 
@@ -246,52 +361,22 @@ func DeserializeEdge(data []byte) (*Edge, error) {
 	}
 
 	// Read label
-	var labelLen uint16
-	if err := binary.Read(buf, binary.LittleEndian, &labelLen); err != nil {
+	label, err := ReadString(buf)
+	if err != nil {
 		return nil, err
 	}
-
-	labelBytes := make([]byte, labelLen)
-	if _, err := io.ReadFull(buf, labelBytes); err != nil {
-		return nil, err
-	}
-	label := string(labelBytes)
 
 	// Create edge
 	edge := NewEdge(sourceID, targetID, label)
 
 	// Read properties
-	var propCount uint16
-	if err := binary.Read(buf, binary.LittleEndian, &propCount); err != nil {
+	properties, err := ReadStringMap(buf)
+	if err != nil {
 		return nil, err
 	}
 
-	for i := uint16(0); i < propCount; i++ {
-		// Read key
-		var keyLen uint16
-		if err := binary.Read(buf, binary.LittleEndian, &keyLen); err != nil {
-			return nil, err
-		}
-
-		keyBytes := make([]byte, keyLen)
-		if _, err := io.ReadFull(buf, keyBytes); err != nil {
-			return nil, err
-		}
-		key := string(keyBytes)
-
-		// Read value
-		var valueLen uint16
-		if err := binary.Read(buf, binary.LittleEndian, &valueLen); err != nil {
-			return nil, err
-		}
-
-		valueBytes := make([]byte, valueLen)
-		if _, err := io.ReadFull(buf, valueBytes); err != nil {
-			return nil, err
-		}
-		value := string(valueBytes)
-
-		// Add property to edge
+	// Add properties to edge
+	for key, value := range properties {
 		edge.AddProperty(key, value)
 	}
 
@@ -307,19 +392,17 @@ func SerializeProperty(property *Property) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write header
-	binary.Write(&buf, binary.LittleEndian, SerializationMagic)
-	binary.Write(&buf, binary.LittleEndian, SerializationVersion)
-	binary.Write(&buf, binary.LittleEndian, TypeProperty)
+	if err := WriteHeader(&buf, TypeProperty); err != nil {
+		return nil, err
+	}
 
-	// Write key length and key bytes
-	keyBytes := []byte(property.Key)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(keyBytes)))
-	buf.Write(keyBytes)
-
-	// Write value length and value bytes
-	valueBytes := []byte(property.Value)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(valueBytes)))
-	buf.Write(valueBytes)
+	// Write key and value
+	if err := WriteString(&buf, property.Key); err != nil {
+		return nil, err
+	}
+	if err := WriteString(&buf, property.Value); err != nil {
+		return nil, err
+	}
 
 	return buf.Bytes(), nil
 }
@@ -333,54 +416,25 @@ func DeserializeProperty(data []byte) (*Property, error) {
 	buf := bytes.NewReader(data)
 
 	// Read and validate header
-	var magic uint32
-	var version uint16
-	var entityType uint8
-
-	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
+	header, err := ReadHeader(buf)
+	if err != nil {
 		return nil, err
 	}
-	if magic != SerializationMagic {
-		return nil, ErrInvalidSerializedData
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
-		return nil, err
-	}
-	if version != SerializationVersion {
-		return nil, ErrUnsupportedVersion
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &entityType); err != nil {
-		return nil, err
-	}
-	if entityType != TypeProperty {
+	if header.Type != TypeProperty {
 		return nil, ErrInvalidEntityType
 	}
 
 	// Read key
-	var keyLen uint16
-	if err := binary.Read(buf, binary.LittleEndian, &keyLen); err != nil {
+	key, err := ReadString(buf)
+	if err != nil {
 		return nil, err
 	}
-
-	keyBytes := make([]byte, keyLen)
-	if _, err := io.ReadFull(buf, keyBytes); err != nil {
-		return nil, err
-	}
-	key := string(keyBytes)
 
 	// Read value
-	var valueLen uint16
-	if err := binary.Read(buf, binary.LittleEndian, &valueLen); err != nil {
+	value, err := ReadString(buf)
+	if err != nil {
 		return nil, err
 	}
-
-	valueBytes := make([]byte, valueLen)
-	if _, err := io.ReadFull(buf, valueBytes); err != nil {
-		return nil, err
-	}
-	value := string(valueBytes)
 
 	// Create property
 	return NewProperty(key, value), nil
@@ -433,6 +487,43 @@ func DeserializeFromPageBytes(data []byte) (interface{}, error) {
 	}
 }
 
+// SerializeGeneric is a generic function that serializes various types to bytes using gob encoding
+func SerializeGeneric(data interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+
+	// Write header
+	if err := WriteHeader(&buf, 0); err != nil {
+		return nil, err
+	}
+
+	// Use gob encoding for generic types
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(data); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// DeserializeGeneric is a generic function that deserializes bytes into the specified type using gob encoding
+func DeserializeGeneric(data []byte, out interface{}) error {
+	if len(data) < 7 { // Magic(4) + Version(2) + Type(1)
+		return ErrInvalidSerializedData
+	}
+
+	buf := bytes.NewReader(data)
+
+	// Read and validate header
+	_, err := ReadHeader(buf)
+	if err != nil {
+		return err
+	}
+
+	// Use gob decoding
+	dec := gob.NewDecoder(buf)
+	return dec.Decode(out)
+}
+
 // Serialize is a generic function that serializes various types to bytes
 func Serialize(data interface{}) ([]byte, error) {
 	switch v := data.(type) {
@@ -449,21 +540,7 @@ func Serialize(data interface{}) ([]byte, error) {
 	case Property:
 		return SerializeProperty(&v)
 	case []uint64, []string, map[string]string:
-		// Generic binary encoding for other types
-		var buf bytes.Buffer
-		if err := binary.Write(&buf, binary.LittleEndian, SerializationMagic); err != nil {
-			return nil, err
-		}
-		if err := binary.Write(&buf, binary.LittleEndian, SerializationVersion); err != nil {
-			return nil, err
-		}
-
-		// Use gob encoding for generic types
-		enc := gob.NewEncoder(&buf)
-		if err := enc.Encode(v); err != nil {
-			return nil, err
-		}
-		return buf.Bytes(), nil
+		return SerializeGeneric(v)
 	default:
 		return nil, errors.New("unsupported type for serialization")
 	}
@@ -471,30 +548,6 @@ func Serialize(data interface{}) ([]byte, error) {
 
 // Deserialize is a generic function that deserializes bytes into the specified type
 func Deserialize(data []byte, out interface{}) error {
-	if len(data) < 6 { // Magic(4) + Version(2)
-		return ErrInvalidSerializedData
-	}
-
-	// Read and validate magic and version
-	buf := bytes.NewReader(data)
-	var magic uint32
-	var version uint16
-
-	if err := binary.Read(buf, binary.LittleEndian, &magic); err != nil {
-		return err
-	}
-	if magic != SerializationMagic {
-		return ErrInvalidSerializedData
-	}
-
-	if err := binary.Read(buf, binary.LittleEndian, &version); err != nil {
-		return err
-	}
-	if version != SerializationVersion {
-		return ErrUnsupportedVersion
-	}
-
-	// Handle different types based on the output parameter
 	switch out := out.(type) {
 	case *Node:
 		node, err := DeserializeNode(data)
@@ -518,11 +571,103 @@ func Deserialize(data []byte, out interface{}) error {
 		*out = *property
 		return nil
 	case *[]uint64, *[]string, *map[string]string:
-		// Generic binary decoding for other types
-		// Skip the header (already validated)
-		dec := gob.NewDecoder(bytes.NewReader(data[6:]))
-		return dec.Decode(out)
+		return DeserializeGeneric(data, out)
 	default:
 		return errors.New("unsupported type for deserialization")
 	}
+}
+
+// SerializeIDs serializes a list of IDs (byte slices) using a standardized format
+// This is used for node IDs, edge IDs, or other list serialization in indexes
+func SerializeIDs(ids [][]byte) ([]byte, error) {
+	var buf bytes.Buffer
+	
+	// Write the list to the buffer
+	if err := WriteBytesList(&buf, ids); err != nil {
+		return nil, err
+	}
+	
+	return buf.Bytes(), nil
+}
+
+// DeserializeIDs deserializes a list of IDs (byte slices) using the standardized format
+func DeserializeIDs(data []byte) ([][]byte, error) {
+	if len(data) < 4 {
+		return nil, errors.New("invalid ID list data: too short")
+	}
+	
+	buf := bytes.NewReader(data)
+	
+	// Read the list from the buffer
+	return ReadBytesList(buf)
+}
+
+// SerializeKeyPrefix creates a key with a prefix
+// Used by indexes to create namespaced keys
+func SerializeKeyPrefix(prefix, key []byte) []byte {
+	result := make([]byte, 0, len(prefix)+len(key))
+	result = append(result, prefix...)
+	result = append(result, key...)
+	return result
+}
+
+// SerializeCompositeKey creates a composite key with multiple components separated by a delimiter
+// Format: component1:component2:component3...
+func SerializeCompositeKey(components ...[]byte) []byte {
+	// Calculate total size with delimiters
+	totalSize := 0
+	for _, comp := range components {
+		totalSize += len(comp) + 1 // Add 1 for delimiter
+	}
+	if len(components) > 0 {
+		totalSize-- // Last component doesn't need delimiter
+	}
+	
+	// Build the key
+	result := make([]byte, 0, totalSize)
+	for i, comp := range components {
+		result = append(result, comp...)
+		if i < len(components)-1 {
+			result = append(result, ':') // Delimiter
+		}
+	}
+	
+	return result
+}
+
+// SplitCompositeKey splits a composite key into its components
+func SplitCompositeKey(key []byte) [][]byte {
+	// Split by delimiter
+	parts := bytes.Split(key, []byte{':'})
+	return parts
+}
+
+// SerializeUint64 converts a uint64 to a byte slice (big-endian for better sorting)
+func SerializeUint64(id uint64) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, id)
+	return buf
+}
+
+// DeserializeUint64 converts a byte slice to a uint64 (big-endian)
+func DeserializeUint64(data []byte) (uint64, error) {
+	if len(data) != 8 {
+		return 0, errors.New("invalid uint64 data: must be 8 bytes")
+	}
+	return binary.BigEndian.Uint64(data), nil
+}
+
+// SerializeUint32 converts a uint32 to a byte slice (big-endian for better sorting)
+func SerializeUint32(id uint32) []byte {
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, id)
+	return buf
+}
+
+// DeserializeUint32 converts a byte slice to a uint32 (big-endian)
+func DeserializeUint32(data []byte) (uint32, error) {
+	if len(data) != 4 {
+		return 0, errors.New("invalid uint32 data: must be 4 bytes")
+	}
+	return binary.BigEndian.Uint32(data), nil
 }

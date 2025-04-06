@@ -2,7 +2,6 @@ package storage
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -164,10 +163,7 @@ func NewBaseIndex(storage *StorageEngine, logger model.Logger, prefix []byte, in
 
 // MakeKey creates a key with the index prefix
 func (idx *BaseIndex) MakeKey(key []byte) []byte {
-	result := make([]byte, 0, len(idx.keyPrefix)+len(key))
-	result = append(result, idx.keyPrefix...)
-	result = append(result, key...)
-	return result
+	return model.SerializeKeyPrefix(idx.keyPrefix, key)
 }
 
 // IsOpen returns whether the index is open
@@ -215,68 +211,12 @@ func (idx *BaseIndex) Flush() error {
 // SerializeIDs serializes a list of IDs using a standardized format
 // This can be used for node IDs, edge IDs, or other list serialization
 func SerializeIDs(ids [][]byte) ([]byte, error) {
-	// Calculate total size
-	totalSize := 4 // Count (uint32)
-	for _, id := range ids {
-		totalSize += 4 + len(id) // Length (uint32) + data
-	}
-
-	// Create buffer
-	buf := make([]byte, totalSize)
-	offset := 0
-
-	// Write count
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(ids)))
-	offset += 4
-
-	// Write IDs
-	for _, id := range ids {
-		// Write length
-		binary.LittleEndian.PutUint32(buf[offset:], uint32(len(id)))
-		offset += 4
-
-		// Write data
-		copy(buf[offset:], id)
-		offset += len(id)
-	}
-
-	return buf, nil
+	return model.SerializeIDs(ids)
 }
 
 // DeserializeIDs deserializes a list of IDs using the standardized format
 func DeserializeIDs(data []byte) ([][]byte, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid ID list data: too short")
-	}
-
-	// Read count
-	count := binary.LittleEndian.Uint32(data[0:4])
-	offset := 4
-
-	// Read IDs
-	ids := make([][]byte, 0, count)
-	for i := uint32(0); i < count; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid ID list data: truncated length field")
-		}
-
-		// Read length
-		length := binary.LittleEndian.Uint32(data[offset:])
-		offset += 4
-
-		if offset+int(length) > len(data) {
-			return nil, errors.New("invalid ID list data: truncated content")
-		}
-
-		// Read data
-		id := make([]byte, length)
-		copy(id, data[offset:offset+int(length)])
-		offset += int(length)
-
-		ids = append(ids, id)
-	}
-
-	return ids, nil
+	return model.DeserializeIDs(data)
 }
 
 // nodeIndex implements a primary index for Node ID -> Node data
