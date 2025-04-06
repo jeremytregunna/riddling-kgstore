@@ -30,3 +30,19 @@ jobs:
 
       - name: Run tests
         run: go test -v ./...
+        
+      - name: Send success notification
+        if: success()
+        run: |
+          curl -X POST \
+          -H "Content-Type: text/plain" \
+          -d "✅ kgstore success! View run at: $GITEA_SERVER_URL/$GITEA_REPOSITORY/actions/runs/$GITEA_RUN_ID" \
+          https://chat.canoozie.net/rooms/5/2-q6gKxqrTAfhd/messages
+          
+      - name: Send failure notification
+        if: failure()
+        run: |
+          curl -X POST \
+          -H "Content-Type: text/plain" \
+          -d "❌ kgstore failure! View run at: $GITEA_SERVER_URL/$GITEA_REPOSITORY/actions/runs/$GITEA_RUN_ID" \
+          https://chat.canoozie.net/rooms/5/2-q6gKxqrTAfhd/messages
