@@ -66,7 +66,10 @@ type EngineConfig struct {
 	// Bloom filter false positive rate
 	BloomFilterFPR float64
 
-	// Use lock-free MemTable implementation
+	// Use lock-free MemTable implementation for better concurrent performance.
+	// Defaults to true as of v1.x. Set to false for backward compatibility
+	// with older code that may rely on mutex-based MemTable implementation.
+	// See docs/MEMTABLE_IMPLEMENTATIONS.md for details.
 	UseLockFreeMemTable bool
 
 	// Use LSM-tree based node label index for better performance
@@ -90,7 +93,7 @@ func DefaultEngineConfig() EngineConfig {
 		Comparator:           DefaultComparator,
 		BackgroundCompaction: true,
 		BloomFilterFPR:       0.01,             // 1% false positive rate
-		UseLockFreeMemTable:  false,            // Default to original MemTable for backward compatibility
+		UseLockFreeMemTable:  true,             // Default to lock-free MemTable for better concurrency
 		UseLSMNodeLabelIndex: true,             // Default to using LSM-tree based node label index
 		UsePropertyIndex:     true,             // Default to using specialized property index
 		SSTableDeletionDelay: 30 * time.Second, // Default 30-second delay for SSTable deletion

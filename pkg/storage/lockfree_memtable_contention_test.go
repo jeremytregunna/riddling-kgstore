@@ -173,7 +173,7 @@ func TestLockFreeMemTableSameKeyContention(t *testing.T) {
 	memTableFullErrors := 0
 	
 	for err := range errCh {
-		if strings.Contains(err, "LockFreeMemTable is full") {
+		if strings.Contains(err, "MemTable is full") {
 			memTableFullErrors++
 		} else {
 			t.Log(err)
