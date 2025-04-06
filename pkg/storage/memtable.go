@@ -3,7 +3,6 @@ package storage
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"math/rand"
 	"sync"
 
@@ -12,11 +11,12 @@ import (
 
 // MemTable errors
 var (
-	ErrKeyNotFound     = errors.New("key not found in MemTable")
-	ErrNilValue        = errors.New("cannot add nil value to MemTable")
-	ErrNilKey          = errors.New("cannot use nil key in MemTable")
-	ErrMemTableFull    = errors.New("MemTable is full")
-	ErrMemTableFlushed = errors.New("MemTable has been flushed and is read-only")
+	// Use the unified error constants from model package
+	ErrKeyNotFound     = model.ErrKeyNotFound
+	ErrNilValue        = model.ErrNilValue
+	ErrNilKey          = model.ErrNilKey
+	ErrMemTableFull    = model.ErrMemTableFull
+	ErrMemTableFlushed = model.ErrMemTableFlushed
 )
 
 // Comparator is a function type that compares two byte slices
@@ -25,6 +25,26 @@ type Comparator func(a, b []byte) int
 // DefaultComparator compares two byte slices lexicographically
 func DefaultComparator(a, b []byte) int {
 	return bytes.Compare(a, b)
+}
+
+// MemTableInterface defines the common interface that both MemTable and LockFreeMemTable implement
+type MemTableInterface interface {
+	Put(key, value []byte) error
+	PutWithVersion(key, value []byte, version uint64) error
+	Get(key []byte) ([]byte, error)
+	Delete(key []byte) error
+	DeleteWithVersion(key []byte, version uint64) error
+	Contains(key []byte) bool
+	Size() uint64
+	MaxSize() uint64
+	EntryCount() int
+	IsFull() bool
+	MarkFlushed()
+	IsFlushed() bool
+	GetEntries() [][]byte
+	GetEntriesWithMetadata() [][]byte
+	GetVersion() uint64
+	Clear()
 }
 
 // Config holds configuration options for the MemTable
@@ -47,6 +67,51 @@ func DefaultConfig() MemTableConfig {
 		Comparator: DefaultComparator,
 		MaxHeight:  12, // Good for millions of entries
 	}
+}
+
+// ValidateMemTableConfig ensures a MemTable configuration has valid values
+// and fills in defaults where needed - common to all MemTable implementations
+func ValidateMemTableConfig(config MemTableConfig) MemTableConfig {
+	if config.Logger == nil {
+		config.Logger = model.DefaultLoggerInstance
+	}
+	if config.Comparator == nil {
+		config.Comparator = DefaultComparator
+	}
+	if config.MaxSize == 0 {
+		config.MaxSize = DefaultConfig().MaxSize
+	}
+	if config.MaxHeight <= 0 {
+		config.MaxHeight = DefaultConfig().MaxHeight
+	}
+	return config
+}
+
+// ValidateKeyValue validates key and value parameters for MemTable operations
+// Returns appropriate errors if invalid
+func ValidateKeyValue(key, value []byte) error {
+	if key == nil {
+		return ErrNilKey
+	}
+	if value == nil {
+		return ErrNilValue
+	}
+	return nil
+}
+
+// FormatMetadataEntry formats version and deletion flag into byte slices for metadata entries
+func FormatMetadataEntry(version uint64, isDeleted bool) ([]byte, []byte) {
+	// Convert version to 8-byte array
+	versionBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(versionBytes, version)
+
+	// Convert deletion flag to 1-byte array
+	var deletedFlag byte = 0
+	if isDeleted {
+		deletedFlag = 1
+	}
+
+	return versionBytes, []byte{deletedFlag}
 }
 
 // skipNode represents a node in the skip list
@@ -78,18 +143,8 @@ type MemTable struct {
 
 // NewMemTable creates a new empty MemTable using a skip list data structure
 func NewMemTable(config MemTableConfig) *MemTable {
-	if config.Logger == nil {
-		config.Logger = model.DefaultLoggerInstance
-	}
-	if config.Comparator == nil {
-		config.Comparator = DefaultComparator
-	}
-	if config.MaxSize == 0 {
-		config.MaxSize = DefaultConfig().MaxSize
-	}
-	if config.MaxHeight <= 0 {
-		config.MaxHeight = DefaultConfig().MaxHeight
-	}
+	// Validate and apply defaults to config
+	config = ValidateMemTableConfig(config)
 
 	// Create a head node with the maximum height
 	head := &skipNode{
@@ -159,11 +214,8 @@ func (m *MemTable) Put(key, value []byte) error {
 // PutWithVersion adds or updates a key-value pair in the MemTable with a specific version
 // If version is 0, it will use the next auto-incremented version
 func (m *MemTable) PutWithVersion(key, value []byte, version uint64) error {
-	if key == nil {
-		return ErrNilKey
-	}
-	if value == nil {
-		return ErrNilValue
+	if err := ValidateKeyValue(key, value); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -448,17 +500,10 @@ func (m *MemTable) GetEntriesWithMetadata() [][]byte {
 		entries = append(entries, append([]byte{}, current.key...))
 		entries = append(entries, append([]byte{}, current.value...))
 
-		// Convert version to 8-byte array
-		versionBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(versionBytes, current.version)
+		// Format and add version and deletion flag
+		versionBytes, deletedFlag := FormatMetadataEntry(current.version, current.isDeleted)
 		entries = append(entries, versionBytes)
-
-		// Convert deletion flag to 1-byte array
-		var deletedFlag byte = 0
-		if current.isDeleted {
-			deletedFlag = 1
-		}
-		entries = append(entries, []byte{deletedFlag})
+		entries = append(entries, deletedFlag)
 
 		current = current.forward[0]
 	}
@@ -494,3 +539,6 @@ func (m *MemTable) Clear() {
 
 	m.logger.Info("MemTable cleared")
 }
+
+// Ensure MemTable implements the MemTableInterface
+var _ MemTableInterface = (*MemTable)(nil)

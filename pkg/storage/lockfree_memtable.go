@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"encoding/binary"
-	"errors"
 	"sync/atomic"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
@@ -10,11 +8,13 @@ import (
 
 // LockFreeMemTable errors
 var (
-	ErrLockFreeKeyNotFound     = errors.New("key not found in LockFreeMemTable")
-	ErrLockFreeNilValue        = errors.New("cannot add nil value to LockFreeMemTable")
-	ErrLockFreeNilKey          = errors.New("cannot use nil key in LockFreeMemTable")
-	ErrLockFreeMemTableFull    = errors.New("LockFreeMemTable is full")
-	ErrLockFreeMemTableFlushed = errors.New("LockFreeMemTable has been flushed and is read-only")
+	// Use the unified error constants from model package
+	// These match the standard MemTable errors for API consistency
+	ErrLockFreeKeyNotFound     = model.ErrKeyNotFound
+	ErrLockFreeNilValue        = model.ErrNilValue
+	ErrLockFreeNilKey          = model.ErrNilKey
+	ErrLockFreeMemTableFull    = model.ErrMemTableFull
+	ErrLockFreeMemTableFlushed = model.ErrMemTableFlushed
 )
 
 // LockFreeMemTableConfig holds configuration options for the LockFreeMemTable
@@ -39,32 +39,35 @@ type LockFreeMemTable struct {
 
 // NewLockFreeMemTable creates a new empty LockFreeMemTable
 func NewLockFreeMemTable(config LockFreeMemTableConfig) *LockFreeMemTable {
-	if config.Logger == nil {
-		config.Logger = model.DefaultLoggerInstance
-	}
-	if config.Comparator == nil {
-		config.Comparator = DefaultComparator
-	}
-	if config.MaxSize == 0 {
-		config.MaxSize = 32 * 1024 * 1024 // 32MB default
+	// Convert to standard config for validation
+	standardConfig := MemTableConfig{
+		MaxSize:    config.MaxSize,
+		Logger:     config.Logger,
+		Comparator: config.Comparator,
 	}
 
+	// Validate using shared validation function
+	standardConfig = ValidateMemTableConfig(standardConfig)
+
 	return &LockFreeMemTable{
-		skiplist:   NewConcurrentSkipList(config.Comparator),
-		maxSize:    config.MaxSize,
+		skiplist:   NewConcurrentSkipList(standardConfig.Comparator),
+		maxSize:    standardConfig.MaxSize,
 		isFlushed:  0, // Not flushed initially
-		logger:     config.Logger,
-		comparator: config.Comparator,
+		logger:     standardConfig.Logger,
+		comparator: standardConfig.Comparator,
 	}
 }
 
 // Put adds or updates a key-value pair in the LockFreeMemTable
 func (m *LockFreeMemTable) Put(key, value []byte) error {
-	if key == nil {
-		return ErrLockFreeNilKey
-	}
-	if value == nil {
-		return ErrLockFreeNilValue
+	return m.PutWithVersion(key, value, 0)
+}
+
+// PutWithVersion adds or updates a key-value pair with a specific version
+func (m *LockFreeMemTable) PutWithVersion(key, value []byte, version uint64) error {
+	// Use shared validation function
+	if err := ValidateKeyValue(key, value); err != nil {
+		return err
 	}
 
 	// Check if the table is flushed
@@ -81,16 +84,21 @@ func (m *LockFreeMemTable) Put(key, value []byte) error {
 
 	// Try to put the key with several retries if needed
 	maxPutRetries := 3
-	var version uint64
+	var usedVersion uint64
 	var ok bool
-	
+
 	for retry := 0; retry < maxPutRetries; retry++ {
-		// Generate new version without passing one
-		version, ok = m.skiplist.Put(key, value)
-		
-		if version > 0 {
+		if version == 0 {
+			// Generate new version without passing one
+			usedVersion, ok = m.skiplist.Put(key, value)
+		} else {
+			// Use specified version
+			usedVersion, ok = m.skiplist.PutWithVersion(key, value, version)
+		}
+
+		if usedVersion > 0 {
 			// The put was successful
-			
+
 			// Verify the key is now retrievable
 			if retry < maxPutRetries-1 {
 				_, err := m.Get(key)
@@ -98,13 +106,21 @@ func (m *LockFreeMemTable) Put(key, value []byte) error {
 					// Key is retrievable, operation complete
 					return nil
 				}
-				
+
 				// Key not yet retrievable, may need to wait a bit for other threads
 				for i := 0; i < (retry+1)*50; i++ {
 					// CPU yield to give other threads a chance
 				}
 			} else {
 				// Last retry, just accept the put worked even if not yet visible
+				// Log the operation
+				if ok {
+					m.logger.Debug("Added new entry to LockFreeMemTable with version %d, key size: %d, value size: %d",
+						usedVersion, len(key), len(value))
+				} else {
+					m.logger.Debug("Updated entry in LockFreeMemTable with version %d, key size: %d, value size: %d",
+						usedVersion, len(key), len(value))
+				}
 				return nil
 			}
 		} else if !ok {
@@ -114,48 +130,20 @@ func (m *LockFreeMemTable) Put(key, value []byte) error {
 			}
 		} else {
 			// Operation succeeded
+			// Log the operation
+			if ok {
+				m.logger.Debug("Added new entry to LockFreeMemTable with version %d, key size: %d, value size: %d",
+					usedVersion, len(key), len(value))
+			} else {
+				m.logger.Debug("Updated entry in LockFreeMemTable with version %d, key size: %d, value size: %d",
+					usedVersion, len(key), len(value))
+			}
 			return nil
 		}
 	}
-	
+
 	// If we got here, the operation completed but might not be immediately visible
 	// This is okay in a lock-free structure, so we'll return success
-	return nil
-}
-
-// PutWithVersion adds or updates a key-value pair with a specific version
-func (m *LockFreeMemTable) PutWithVersion(key, value []byte, version uint64) error {
-	if key == nil {
-		return ErrLockFreeNilKey
-	}
-	if value == nil {
-		return ErrLockFreeNilValue
-	}
-
-	// Check if the table is flushed
-	if atomic.LoadUint32(&m.isFlushed) == 1 {
-		return ErrLockFreeMemTableFlushed
-	}
-
-	// Check if adding would exceed max size
-	entrySize := uint64(len(key) + len(value))
-	currentSize := m.skiplist.Size()
-	if currentSize+entrySize > m.maxSize {
-		return ErrLockFreeMemTableFull
-	}
-
-	// Add to the skiplist
-	usedVersion, isNew := m.skiplist.PutWithVersion(key, value, version)
-
-	// Log the operation
-	if isNew {
-		m.logger.Debug("Added new entry to LockFreeMemTable with version %d, key size: %d, value size: %d",
-			usedVersion, len(key), len(value))
-	} else {
-		m.logger.Debug("Updated entry in LockFreeMemTable with version %d, key size: %d, value size: %d",
-			usedVersion, len(key), len(value))
-	}
-
 	return nil
 }
 
@@ -168,25 +156,25 @@ func (m *LockFreeMemTable) Get(key []byte) ([]byte, error) {
 	// Try to get from skiplist with retries
 	const maxRetries = 3
 	var lastErr error
-	
+
 	for retry := 0; retry < maxRetries; retry++ {
 		// Try to get the value
 		value, _, found := m.skiplist.Get(key)
 		if found {
 			return value, nil
 		}
-		
+
 		// Check if the key exists but is marked as deleted
 		node, _ := m.skiplist.findNodeAndPrevs(key)
 		if node != nil && atomic.LoadUint32(&node.isDeleted) == 1 {
 			// The key exists but is marked as deleted - this is a definitive result
 			return nil, ErrLockFreeKeyNotFound
 		}
-		
+
 		// Key wasn't found, but we'll retry because in a concurrent environment
 		// the key might be in the process of being added by another goroutine
 		lastErr = ErrLockFreeKeyNotFound
-		
+
 		// Small backoff before retry
 		if retry < maxRetries-1 {
 			// Sleep for a short time to allow other operations to complete
@@ -202,18 +190,7 @@ func (m *LockFreeMemTable) Get(key []byte) ([]byte, error) {
 
 // Delete marks a key as deleted
 func (m *LockFreeMemTable) Delete(key []byte) error {
-	if key == nil {
-		return ErrLockFreeNilKey
-	}
-
-	// Check if the table is flushed
-	if atomic.LoadUint32(&m.isFlushed) == 1 {
-		return ErrLockFreeMemTableFlushed
-	}
-
-	// Delete in skiplist
-	m.skiplist.Delete(key)
-	return nil
+	return m.DeleteWithVersion(key, 0)
 }
 
 // DeleteWithVersion marks a key as deleted with a specific version
@@ -317,17 +294,11 @@ func (m *LockFreeMemTable) GetEntriesWithMetadata() [][]byte {
 		entries = append(entries, keyCopy)
 		entries = append(entries, valueCopy)
 
-		// Convert version to 8-byte array
-		versionBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(versionBytes, curr.version)
+		// Use shared utility for formatting version and deletion flag
+		isDeleted := atomic.LoadUint32(&curr.isDeleted) == 1
+		versionBytes, deletedFlag := FormatMetadataEntry(curr.version, isDeleted)
 		entries = append(entries, versionBytes)
-
-		// Convert deletion flag to 1-byte array
-		var deletedFlag byte = 0
-		if atomic.LoadUint32(&curr.isDeleted) == 1 {
-			deletedFlag = 1
-		}
-		entries = append(entries, []byte{deletedFlag})
+		entries = append(entries, deletedFlag)
 
 		// Move to next node
 		curr = curr.next[0]
@@ -348,25 +319,5 @@ func (m *LockFreeMemTable) Clear() {
 	m.logger.Info("LockFreeMemTable cleared")
 }
 
-// Ensure LockFreeMemTable implements the same interface as MemTable
+// Ensure LockFreeMemTable implements the MemTableInterface
 var _ MemTableInterface = (*LockFreeMemTable)(nil)
-
-// MemTableInterface defines the common interface that both MemTable and LockFreeMemTable implement
-type MemTableInterface interface {
-	Put(key, value []byte) error
-	PutWithVersion(key, value []byte, version uint64) error
-	Get(key []byte) ([]byte, error)
-	Delete(key []byte) error
-	DeleteWithVersion(key []byte, version uint64) error
-	Contains(key []byte) bool
-	Size() uint64
-	MaxSize() uint64
-	EntryCount() int
-	IsFull() bool
-	MarkFlushed()
-	IsFlushed() bool
-	GetEntries() [][]byte
-	GetEntriesWithMetadata() [][]byte
-	GetVersion() uint64
-	Clear()
-}
