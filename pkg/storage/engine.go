@@ -1418,39 +1418,67 @@ type EngineStats struct {
 // It periodically checks for SSTables that have been pending deletion for longer than 
 // the configured delay and physically deletes them
 func (e *StorageEngine) deletionWorker() {
-	ticker := time.NewTicker(5 * time.Second)
+	// For fast detection, use an interval that's 1/4 of the deletion delay or 5 seconds, whichever is smaller
+	checkInterval := e.config.SSTableDeletionDelay / 4
+	if checkInterval > 5*time.Second || checkInterval <= 0 {
+		checkInterval = 5 * time.Second // Default: check every 5 seconds
+	}
+	
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
+	
+	e.logger.Debug("Starting deletion worker with interval: %v", checkInterval)
 
 	for {
 		select {
 		case <-ticker.C:
-			e.cleanupPendingDeletions()
+			e.CleanupPendingDeletions()
 		case <-e.deletionExit:
 			return // Exit signal received
 		}
 	}
 }
 
-// cleanupPendingDeletions checks for SSTables that have been marked for deletion
+// CleanupPendingDeletions checks for SSTables that have been marked for deletion
 // and removes them if they've been pending for longer than the configured delay
-func (e *StorageEngine) cleanupPendingDeletions() {
+// This is exported for testing purposes.
+func (e *StorageEngine) CleanupPendingDeletions() {
 	e.deletionMu.Lock()
 	defer e.deletionMu.Unlock()
+
+	// Skip if no pending deletions
+	if len(e.pendingDeletions) == 0 {
+		return
+	}
 
 	now := time.Now()
 	var toDelete []uint64
 
 	// Find SSTables that have been pending deletion long enough
 	for id, timestamp := range e.deletionTime {
-		if now.Sub(timestamp) >= e.config.SSTableDeletionDelay {
+		elapsed := now.Sub(timestamp)
+		if elapsed >= e.config.SSTableDeletionDelay {
 			toDelete = append(toDelete, id)
+			e.logger.Debug("SSTable %d eligible for deletion (waited %v of %v delay)",
+				id, elapsed, e.config.SSTableDeletionDelay)
+		} else {
+			e.logger.Debug("SSTable %d not yet eligible for deletion (waited %v of %v delay)",
+				id, elapsed, e.config.SSTableDeletionDelay)
 		}
 	}
+
+	if len(toDelete) == 0 {
+		e.logger.Debug("No SSTables eligible for physical deletion yet")
+		return
+	}
+
+	e.logger.Debug("Found %d SSTables eligible for physical deletion", len(toDelete))
 
 	// Delete them one by one
 	for _, id := range toDelete {
 		sstable, exists := e.pendingDeletions[id]
 		if !exists {
+			e.logger.Warn("SSTable %d was marked for deletion but not in pendingDeletions map", id)
 			continue
 		}
 

@@ -85,16 +85,17 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 			
 			stats.CorruptedCount++
 			if errors.Is(err, ErrWALCorrupted) || errors.Is(err, ErrInvalidWALRecord) {
-				wal.logger.Warn("Corrupted WAL record detected: %v", err)
+					wal.logger.Warn("Corrupted WAL record detected at position %d: %v", stats.RecordCount+1, err)
 				if options.StrictMode {
-					return stats, fmt.Errorf("WAL corruption detected in strict mode: %w", err)
+						return stats, fmt.Errorf("WAL corruption detected at position %d in strict mode: %w", stats.RecordCount+1, err)
 				}
 				// In lenient mode, we try to continue
 				continue
 			}
 			
 			// Other errors are fatal
-			return stats, fmt.Errorf("error reading WAL record: %w", err)
+			// Add more detail about where in the WAL we encountered the error
+			return stats, fmt.Errorf("error reading WAL record at position %d: %w", stats.RecordCount+1, err)
 		}
 		
 		stats.RecordCount++

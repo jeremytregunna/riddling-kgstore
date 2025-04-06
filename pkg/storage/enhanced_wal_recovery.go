@@ -109,19 +109,20 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 		
 		if err != nil {
 			stats.CorruptedCount++
-			w.logger.Warn("Error reading WAL record during first pass: %v", err)
+			w.logger.Warn("Error reading WAL record during first pass at position %d: %v", stats.RecordCount, err)
 			
 			// If this record is part of a transaction, mark the transaction as corrupted
 			if record.TxID > 0 {
 				corruptedTxs[record.TxID] = true
 				
-				// Log more detailed corruption information
-				w.logger.Warn("Transaction %d contains corrupted record at position %d", 
-					record.TxID, stats.RecordCount)
+				// Log more detailed corruption information including file position
+				filePos, _ := w.file.Seek(0, io.SeekCurrent)
+				w.logger.Warn("Transaction %d contains corrupted record at position %d (file offset approx: %d bytes)", 
+					record.TxID, stats.RecordCount, filePos)
 			}
 			
 			if options.StrictMode {
-				return stats, fmt.Errorf("corrupted WAL record in strict mode: %w", err)
+				return stats, fmt.Errorf("corrupted WAL record at position %d in strict mode: %w", stats.RecordCount, err)
 			}
 			continue
 		}
@@ -177,13 +178,18 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 		if err == io.EOF {
 			break
 		}
-		if err != nil {
-			// We already counted this in the first pass
-			if options.StrictMode {
-				return stats, fmt.Errorf("corrupted WAL record in strict mode: %w", err)
+			if err != nil {
+				// We already counted this in the first pass
+				// Get current file position for better error reporting
+				filePos, _ := w.file.Seek(0, io.SeekCurrent)
+				w.logger.Warn("Skipping corrupted record during second pass (file offset approx: %d bytes)", filePos)
+				
+				if options.StrictMode {
+					return stats, fmt.Errorf("corrupted WAL record at position %d (file offset: %d) in strict mode: %w", 
+						stats.RecordCount, filePos, err)
+				}
+				continue
 			}
-			continue
-		}
 		
 		// Only process standalone records (txID=0) in this pass
 		if record.TxID != 0 || record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
