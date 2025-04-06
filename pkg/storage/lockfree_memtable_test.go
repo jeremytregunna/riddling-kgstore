@@ -129,7 +129,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 
 				// Put operation - retry with backoff if needed
 				var putErr error
-				maxRetries := 5  // Increased from 3
+				maxRetries := 5 // Increased from 3
 				for retries := 0; retries < maxRetries; retries++ {
 					putErr = table.Put(key, value)
 					if putErr == nil {
@@ -147,7 +147,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 				// Get operation (should succeed) - with retry logic
 				var result []byte
 				var getErr error
-				maxRetries = 5  // Increased from 3
+				maxRetries = 5 // Increased from 3
 				for retries := 0; retries < maxRetries; retries++ {
 					result, getErr = table.Get(key)
 					if getErr == nil {
@@ -166,7 +166,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 				// Delete operation for even j values
 				if j%2 == 0 {
 					var delErr error
-					maxRetries = 5  // Increased from 3
+					maxRetries = 5 // Increased from 3
 					for retries := 0; retries < maxRetries; retries++ {
 						delErr = table.Delete(key)
 						if delErr == nil {
@@ -184,7 +184,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 					// Verify deletion with retries
 					var verifyErr error
 					found := false
-					maxRetries = 5  // Increased from 3
+					maxRetries = 5 // Increased from 3
 					for retries := 0; retries < maxRetries; retries++ {
 						_, verifyErr = table.Get(key)
 						if verifyErr == ErrLockFreeKeyNotFound {

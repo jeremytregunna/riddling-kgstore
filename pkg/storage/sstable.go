@@ -108,12 +108,12 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
-	
+
 	// Create temporary file paths
 	tmpDataFile := filepath.Join(tmpDir, fmt.Sprintf("%d.data", config.ID))
 	tmpIndexFile := filepath.Join(tmpDir, fmt.Sprintf("%d.index", config.ID))
 	tmpFilterFile := filepath.Join(tmpDir, fmt.Sprintf("%d.filter", config.ID))
-	
+
 	// Create final file paths
 	dataFile := filepath.Join(config.Path, fmt.Sprintf("%d.data", config.ID))
 	indexFile := filepath.Join(config.Path, fmt.Sprintf("%d.index", config.ID))
@@ -141,7 +141,7 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 		// Use traditional entries without deleted records
 		entries = memTable.GetEntries()
 	}
-	
+
 	// Flag to track if we should clean up temporary files
 	var cleanupTmp bool = true
 	defer func() {
@@ -150,7 +150,7 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 			os.RemoveAll(tmpDir)
 		}
 	}()
-	
+
 	if len(entries) == 0 {
 		// Create empty SSTable files
 		if err := sst.createEmptySSTable(); err != nil {
@@ -162,48 +162,48 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 			return nil, fmt.Errorf("failed to build SSTable: %w", err)
 		}
 	}
-	
+
 	// Now we need to atomically move the temporary files to their final location
-	
+
 	// First, ensure all data is synced to disk
 	if err := syncDirectory(tmpDir); err != nil {
 		return nil, fmt.Errorf("failed to sync temporary directory: %w", err)
 	}
-	
+
 	// Move files one by one
 	if err := atomicMoveFile(tmpDataFile, dataFile); err != nil {
 		return nil, fmt.Errorf("failed to move data file: %w", err)
 	}
-	
+
 	if err := atomicMoveFile(tmpIndexFile, indexFile); err != nil {
 		// Try to clean up the moved data file
 		os.Remove(dataFile)
 		return nil, fmt.Errorf("failed to move index file: %w", err)
 	}
-	
+
 	if err := atomicMoveFile(tmpFilterFile, filterFile); err != nil {
 		// Try to clean up the moved files
 		os.Remove(dataFile)
 		os.Remove(indexFile)
 		return nil, fmt.Errorf("failed to move filter file: %w", err)
 	}
-	
+
 	// Sync the parent directory to ensure file moves are durable
 	if err := syncDirectory(config.Path); err != nil {
 		return nil, fmt.Errorf("failed to sync SSTable directory: %w", err)
 	}
-	
+
 	// Update SSTable with final file paths
 	sst.dataFile = dataFile
 	sst.indexFile = indexFile
 	sst.filterFile = filterFile
-	
+
 	// Don't clean up the temporary directory, as we've successfully moved all files
 	cleanupTmp = false
-	
+
 	// Safe to remove the temp directory now
 	os.RemoveAll(tmpDir)
-	
+
 	sst.logger.Info("Created SSTable with ID %d, %d keys, %d bytes",
 		config.ID, sst.keyCount, sst.dataSize)
 
@@ -230,7 +230,7 @@ func syncDirectory(dir string) error {
 		return err
 	}
 	defer f.Close()
-	
+
 	// Sync the directory to ensure all operations are durable
 	return f.Sync()
 }
@@ -409,7 +409,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	if len(entries) == 0 || (len(entries)%2 != 0 && len(entries)%4 != 0) {
 		return errors.New("invalid entries: must be non-empty and contain valid entry format")
 	}
-	
+
 	// Determine if we're using versioned records
 	isVersioned := len(entries)%4 == 0 && len(entries) > 0
 
@@ -426,7 +426,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 		return fmt.Errorf("failed to create index file: %w", err)
 	}
 	defer indexFile.Close()
-	
+
 	// Create empty filter file
 	filterFile, err := os.Create(sst.filterFile)
 	if err != nil {
@@ -504,7 +504,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 			value := entries[i+1]
 			version := entries[i+2]
 			isDeleted := entries[i+3]
-			
+
 			// If it's a tombstone and we're filtering, skip it
 			if isDeleted[0] != 0 {
 				// Skip this tombstone if we didn't request them
@@ -522,7 +522,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 			dataWriter.Write(key)
 			binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
 			dataWriter.Write(value)
-			dataWriter.Write(version) // 8 bytes for version
+			dataWriter.Write(version)   // 8 bytes for version
 			dataWriter.Write(isDeleted) // 1 byte for isDeleted flag
 
 			// Update offset for the next entry
@@ -533,11 +533,11 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 		for i := 0; i < len(entries); i += 2 {
 			key := entries[i]
 			value := entries[i+1]
-			
+
 			// Default values for version and isDeleted
 			versionBytes := make([]byte, 8)
 			isDeletedByte := []byte{0} // Not deleted
-			
+
 			// Write index entry: key length, key, data offset, dummy version
 			binary.Write(indexWriter, binary.LittleEndian, uint16(len(key)))
 			indexWriter.Write(key)
@@ -549,7 +549,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 			dataWriter.Write(key)
 			binary.Write(dataWriter, binary.LittleEndian, uint32(len(value)))
 			dataWriter.Write(value)
-			dataWriter.Write(versionBytes) // 8 bytes for version (zeros)
+			dataWriter.Write(versionBytes)  // 8 bytes for version (zeros)
 			dataWriter.Write(isDeletedByte) // 1 byte for isDeleted flag (not deleted)
 
 			// Update offset for the next entry
@@ -591,7 +591,7 @@ func (sst *SSTable) createEmptySSTable() error {
 		return fmt.Errorf("failed to create index file: %w", err)
 	}
 	defer indexFile.Close()
-	
+
 	// Create empty filter file
 	filterFile, err := os.Create(sst.filterFile)
 	if err != nil {
@@ -700,10 +700,10 @@ func (sst *SSTable) findKeyInIndex(key []byte) (uint64, uint64, error) {
 	// We'll disable the cache for now since it doesn't include version info
 	// In a real implementation, we'd update the cache structure to include version
 	/*
-	keyStr := string(key)
-	if offset, ok := sst.indexCache[keyStr]; ok {
-		return offset, 0, nil
-	}
+		keyStr := string(key)
+		if offset, ok := sst.indexCache[keyStr]; ok {
+			return offset, 0, nil
+		}
 	*/
 
 	// Open index file
@@ -907,7 +907,7 @@ func (sst *SSTable) readValueAtOffset(offset uint64) ([]byte, bool, uint64, erro
 	if _, err := io.ReadFull(dataFile, isDeletedByte); err != nil {
 		return nil, false, 0, fmt.Errorf("failed to read isDeleted flag: %w", err)
 	}
-	
+
 	isDeleted := isDeletedByte[0] != 0
 
 	return value, isDeleted, version, nil
@@ -940,11 +940,11 @@ func (sst *SSTable) IteratorWithOptions(options IteratorOptions) (*SSTableIterat
 
 	// Create and initialize an iterator
 	iter := &SSTableIterator{
-		sst:              sst,
-		position:         0,
-		valid:            false,
-		isDeleted:        false,
-		version:          0,
+		sst:               sst,
+		position:          0,
+		valid:             false,
+		isDeleted:         false,
+		version:           0,
 		includeTombstones: options.IncludeTombstones,
 	}
 
@@ -986,15 +986,15 @@ func (sst *SSTable) IteratorWithOptions(options IteratorOptions) (*SSTableIterat
 
 // SSTableIterator allows iterating over the key-value pairs in an SSTable
 type SSTableIterator struct {
-	sst              *SSTable
-	dataFile         *os.File
-	position         uint64
-	key              []byte
-	value            []byte
-	valid            bool
-	version          uint64    // Version number for versioned records
-	isDeleted        bool      // Deletion flag for tombstones
-	includeTombstones bool     // Whether to include tombstones during iteration
+	sst               *SSTable
+	dataFile          *os.File
+	position          uint64
+	key               []byte
+	value             []byte
+	valid             bool
+	version           uint64 // Version number for versioned records
+	isDeleted         bool   // Deletion flag for tombstones
+	includeTombstones bool   // Whether to include tombstones during iteration
 }
 
 // Valid returns true if the iterator is pointing to a valid key-value pair
@@ -1080,27 +1080,27 @@ func (iter *SSTableIterator) Next() error {
 		iter.valid = false
 		return fmt.Errorf("failed to read value: %w", err)
 	}
-	
+
 	// Read version (8 bytes)
 	versionBytes := make([]byte, 8)
 	if _, err := io.ReadFull(iter.dataFile, versionBytes); err != nil {
 		iter.valid = false
 		return fmt.Errorf("failed to read version: %w", err)
 	}
-	
+
 	// Read isDeleted flag (1 byte)
 	isDeletedByte := make([]byte, 1)
 	if _, err := io.ReadFull(iter.dataFile, isDeletedByte); err != nil {
 		iter.valid = false
 		return fmt.Errorf("failed to read isDeleted flag: %w", err)
 	}
-	
+
 	isDeleted := isDeletedByte[0] != 0
 
 	// Update iterator state with version and deletion info
 	iter.version = binary.LittleEndian.Uint64(versionBytes)
 	iter.isDeleted = isDeleted
-	
+
 	// Skip tombstones unless specifically requested
 	// If includeTombstones is false, skip deleted records
 	if isDeleted && iter.includeTombstones == false {

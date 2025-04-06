@@ -14,43 +14,43 @@ import (
 type ReplayStats struct {
 	// Total number of records processed
 	RecordCount int
-	
+
 	// Number of records successfully applied
 	AppliedCount int
-	
+
 	// Number of corrupted records encountered
 	CorruptedCount int
-	
+
 	// Number of transactions skipped due to corruption or incompleteness
 	SkippedTxCount int
-	
+
 	// Number of standalone operations processed
 	StandaloneOpCount int
-	
+
 	// Number of transaction operations processed
 	TransactionOpCount int
-	
+
 	// Number of incomplete transactions encountered
 	IncompleteTransactions int
-	
+
 	// Number of corrupted transactions encountered
 	CorruptedTransactions int
-	
+
 	// Timestamps for performance measurement
 	StartTime time.Time
-	EndTime time.Time
-	Duration time.Duration
-	
+	EndTime   time.Time
+	Duration  time.Duration
+
 	// Transaction counts
-	TxBeginCount int
-	TxCommitCount int
+	TxBeginCount    int
+	TxCommitCount   int
 	TxRollbackCount int
 }
 
 // EnhancedReplayWithOptions provides improved WAL replay with configurable options and detailed error handling
 func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions) (ReplayStats, error) {
 	var stats ReplayStats
-	
+
 	if !w.isOpen {
 		return stats, ErrWALClosed
 	}
@@ -64,69 +64,69 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 	if _, err := w.file.Seek(4, io.SeekStart); err != nil { // Skip magic number
 		return stats, fmt.Errorf("failed to seek past magic number: %w", err)
 	}
-	
+
 	var version uint16
 	if err := binary.Read(w.file, binary.LittleEndian, &version); err != nil {
 		return stats, fmt.Errorf("failed to read version: %w", err)
 	}
-	
+
 	// Determine the header size based on version
 	headerSize := 6 // Magic (4) + Version (2) for v1
 	if version == 2 {
 		headerSize = 14 // Magic (4) + Version (2) + NextTxID (8) for v2
 	}
-	
+
 	// Seek to the beginning of the file, after the header
 	if _, err := w.file.Seek(int64(headerSize), io.SeekStart); err != nil {
 		return stats, fmt.Errorf("failed to seek to WAL data: %w", err)
 	}
-	
+
 	// Track transaction status
-	completedTxs := make(map[uint64]bool)   // Committed transactions
-	rolledBackTxs := make(map[uint64]bool)  // Rolled back transactions
-	activeTxs := make(map[uint64]bool)      // Active (uncommitted) transactions
-	corruptedTxs := make(map[uint64]bool)   // Transactions with corrupted records
-	
+	completedTxs := make(map[uint64]bool)  // Committed transactions
+	rolledBackTxs := make(map[uint64]bool) // Rolled back transactions
+	activeTxs := make(map[uint64]bool)     // Active (uncommitted) transactions
+	corruptedTxs := make(map[uint64]bool)  // Transactions with corrupted records
+
 	// Store transaction operations for atomic replay
 	txOperations := make(map[uint64][]WALRecord)
-	
+
 	// First pass: scan to identify transaction status and collect operations
 	firstPassPos, err := w.file.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
 		return stats, fmt.Errorf("failed to seek to WAL data for first pass: %w", err)
 	}
-	
+
 	reader := bufio.NewReader(w.file)
-	
+
 	// First pass to determine transaction status and collect operations
 	for {
 		record, err := w.readRecord(reader)
 		if err == io.EOF {
 			break
 		}
-		
+
 		stats.RecordCount++
-		
+
 		if err != nil {
 			stats.CorruptedCount++
 			w.logger.Warn("Error reading WAL record during first pass at position %d: %v", stats.RecordCount, err)
-			
+
 			// If this record is part of a transaction, mark the transaction as corrupted
 			if record.TxID > 0 {
 				corruptedTxs[record.TxID] = true
-				
+
 				// Log more detailed corruption information including file position
 				filePos, _ := w.file.Seek(0, io.SeekCurrent)
-				w.logger.Warn("Transaction %d contains corrupted record at position %d (file offset approx: %d bytes)", 
+				w.logger.Warn("Transaction %d contains corrupted record at position %d (file offset approx: %d bytes)",
 					record.TxID, stats.RecordCount, filePos)
 			}
-			
+
 			if options.StrictMode {
 				return stats, fmt.Errorf("corrupted WAL record at position %d in strict mode: %w", stats.RecordCount, err)
 			}
 			continue
 		}
-		
+
 		switch record.Type {
 		case RecordTxBegin:
 			activeTxs[record.TxID] = true
@@ -153,49 +153,49 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 				return stats, fmt.Errorf("unknown record type %d in strict mode", record.Type)
 			}
 		}
-		
+
 		// Update nextTxID based on records seen
 		if record.TxID > 0 && record.TxID >= w.nextTxID {
 			w.nextTxID = record.TxID + 1
 		}
 	}
-	
+
 	// Track the number of incomplete transactions
 	stats.IncompleteTransactions = len(activeTxs)
 	stats.CorruptedTransactions = len(corruptedTxs)
-	
+
 	// Second pass: apply standalone records first
 	_, err = w.file.Seek(firstPassPos, io.SeekStart)
 	if err != nil {
 		return stats, fmt.Errorf("failed to reset file position for second pass: %w", err)
 	}
-	
+
 	reader = bufio.NewReader(w.file)
-	
+
 	// Apply standalone operations (not part of any transaction)
 	for {
 		record, err := w.readRecord(reader)
 		if err == io.EOF {
 			break
 		}
-			if err != nil {
-				// We already counted this in the first pass
-				// Get current file position for better error reporting
-				filePos, _ := w.file.Seek(0, io.SeekCurrent)
-				w.logger.Warn("Skipping corrupted record during second pass (file offset approx: %d bytes)", filePos)
-				
-				if options.StrictMode {
-					return stats, fmt.Errorf("corrupted WAL record at position %d (file offset: %d) in strict mode: %w", 
-						stats.RecordCount, filePos, err)
-				}
-				continue
+		if err != nil {
+			// We already counted this in the first pass
+			// Get current file position for better error reporting
+			filePos, _ := w.file.Seek(0, io.SeekCurrent)
+			w.logger.Warn("Skipping corrupted record during second pass (file offset approx: %d bytes)", filePos)
+
+			if options.StrictMode {
+				return stats, fmt.Errorf("corrupted WAL record at position %d (file offset: %d) in strict mode: %w",
+					stats.RecordCount, filePos, err)
 			}
-		
+			continue
+		}
+
 		// Only process standalone records (txID=0) in this pass
 		if record.TxID != 0 || record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
 			continue
 		}
-		
+
 		// Apply standalone records
 		var applyErr error
 		switch record.Type {
@@ -204,14 +204,14 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 			// based on WAL replay order
 			w.nextTxID++
 			version := w.nextTxID
-			
+
 			applyErr = memTable.PutWithVersion(record.Key, record.Value, version)
 		case RecordDelete:
 			// For non-transaction operations, assign monotonically increasing versions
 			// based on WAL replay order
 			w.nextTxID++
 			version := w.nextTxID
-			
+
 			applyErr = memTable.DeleteWithVersion(record.Key, version)
 		default:
 			w.logger.Warn("Unknown record type: %d", record.Type)
@@ -220,7 +220,7 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 			}
 			continue
 		}
-		
+
 		if applyErr != nil {
 			w.logger.Warn("Failed to apply standalone record: %v", applyErr)
 			if options.StrictMode {
@@ -228,24 +228,24 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 			}
 			continue
 		}
-		
+
 		stats.AppliedCount++
 		stats.StandaloneOpCount++
 	}
-	
+
 	// Third pass: apply transactions based on configuration
 	// For each transaction, determine if we should apply it based on:
 	// 1. If it was committed (completedTxs)
 	// 2. If it contains corrupted records (corruptedTxs)
 	// 3. If it's incomplete (activeTxs)
 	// 4. The options.AtomicTxOnly setting
-	
+
 	for txID, operations := range txOperations {
 		// Skip rolled back transactions
 		if rolledBackTxs[txID] {
 			continue
 		}
-		
+
 		// Handle corrupted transactions
 		if corruptedTxs[txID] {
 			if options.AtomicTxOnly {
@@ -258,7 +258,7 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 				// We'll proceed with applying the operations, but expect some may fail
 			}
 		}
-		
+
 		// Handle incomplete transactions
 		if !completedTxs[txID] && activeTxs[txID] {
 			if options.AtomicTxOnly {
@@ -271,11 +271,11 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 				// We'll proceed with applying the operations from incomplete transactions
 			}
 		}
-		
+
 		// If it's a completed transaction or we're allowing non-atomic application
 		if completedTxs[txID] || !options.AtomicTxOnly {
 			w.logger.Debug("Applying transaction %d with %d operations", txID, len(operations))
-			
+
 			// In atomic mode, verify all operations can succeed before applying
 			if options.AtomicTxOnly {
 				// Build a temporary buffer for this transaction's operations
@@ -284,7 +284,7 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 					Logger:     w.logger,
 					Comparator: DefaultComparator,
 				})
-				
+
 				// Try to apply all operations to the temporary memtable first
 				allSuccess := true
 				for _, op := range operations {
@@ -300,7 +300,7 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 							version := txID * 1000
 							err = tempMemTable.DeleteWithVersion(op.Key, version)
 						}
-						
+
 						if err != nil {
 							w.logger.Warn("Transaction %d validation failed, skipping: %v", txID, err)
 							allSuccess = false
@@ -308,14 +308,14 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 						}
 					}
 				}
-				
+
 				// If any operation would fail, skip the entire transaction
 				if !allSuccess {
 					stats.SkippedTxCount++
 					continue
 				}
 			}
-			
+
 			// Now apply all operations to the real memtable
 			txApplyCount := 0
 			for _, op := range operations {
@@ -353,7 +353,7 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 						}
 						err = memTable.DeleteWithVersion(op.Key, version)
 					}
-					
+
 					if err != nil {
 						w.logger.Warn("Failed to apply operation from transaction %d: %v", txID, err)
 						if options.AtomicTxOnly && completedTxs[txID] {
@@ -367,16 +367,16 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 					}
 				}
 			}
-			
+
 			w.logger.Debug("Successfully applied %d operations from transaction %d", txApplyCount, txID)
 		}
 	}
-	
+
 	// Restore any active transactions that were not completed
 	for txID := range activeTxs {
 		w.activeTxs[txID] = true
 	}
-	
+
 	// Double-check to ensure nextTxID is properly updated based on all transaction records
 	for txID := range completedTxs {
 		if txID >= w.nextTxID {
@@ -396,12 +396,12 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 			w.logger.Debug("Updated nextTxID to %d based on active txID=%d", w.nextTxID, txID)
 		}
 	}
-	
+
 	// Seek back to the end of the file for future writes
 	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
 		return stats, fmt.Errorf("failed to seek to end of WAL: %w", err)
 	}
-	
+
 	// Log detailed statistics
 	w.logger.Info("WAL replay completed: processed %d records, applied %d, corrupted %d",
 		stats.RecordCount, stats.AppliedCount, stats.CorruptedCount)
@@ -409,6 +409,6 @@ func EnhancedReplayWithOptions(w *WAL, memTable *MemTable, options ReplayOptions
 		stats.StandaloneOpCount, stats.TransactionOpCount, stats.SkippedTxCount)
 	w.logger.Info("Transaction status: incomplete txs: %d, corrupted txs: %d",
 		stats.IncompleteTransactions, stats.CorruptedTransactions)
-	
+
 	return stats, nil
 }

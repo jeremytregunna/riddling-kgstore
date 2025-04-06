@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 	"time"
-	
+
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
@@ -22,7 +22,7 @@ func TestDeletionDelay(t *testing.T) {
 	config := DefaultEngineConfig()
 	config.DataDir = dir
 	config.SSTableDeletionDelay = 500 * time.Millisecond // Very short delay for testing
-	config.BackgroundCompaction = false 
+	config.BackgroundCompaction = false
 	config.Logger = model.NewNoOpLogger()
 
 	engine, err := NewStorageEngine(config)
@@ -36,13 +36,13 @@ func TestDeletionDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to put test key: %v", err)
 	}
-	
+
 	// Flush to ensure the data is written
 	err = engine.Flush()
 	if err != nil {
 		t.Fatalf("Failed to flush: %v", err)
 	}
-	
+
 	// Manually add an SSTable to the pending deletions
 	var sstable *SSTable
 	engine.mu.RLock()
@@ -56,32 +56,32 @@ func TestDeletionDelay(t *testing.T) {
 		}
 	}
 	engine.mu.RUnlock()
-	
+
 	// Mark the SSTable for deletion using the proper API
 	engine.markSSTableForDeletion(sstable)
-	
+
 	// Verify it was added to pending deletions
 	engine.deletionMu.Lock()
 	if _, exists := engine.pendingDeletions[sstable.id]; !exists {
 		t.Fatalf("SSTable was not added to pending deletions")
 	}
 	engine.deletionMu.Unlock()
-	
+
 	// Wait for less than the deletion delay - should still be pending
 	time.Sleep(200 * time.Millisecond)
-	
+
 	engine.deletionMu.Lock()
 	if _, exists := engine.pendingDeletions[sstable.id]; !exists {
 		t.Fatalf("SSTable was removed from pending deletions too early")
 	}
 	engine.deletionMu.Unlock()
-	
+
 	// Wait for the remainder of the deletion delay
 	time.Sleep(400 * time.Millisecond)
-	
+
 	// Force a cleanup run instead of waiting for the timer
 	engine.CleanupPendingDeletions()
-	
+
 	// Verify the SSTable was removed from pending deletions
 	engine.deletionMu.Lock()
 	if _, exists := engine.pendingDeletions[sstable.id]; exists {
@@ -115,18 +115,18 @@ func TestGetFromPendingDeletions(t *testing.T) {
 	// Insert test data
 	testKey := []byte("test-key")
 	testValue := []byte("test-value")
-	
+
 	err = engine.Put(testKey, testValue)
 	if err != nil {
 		t.Fatalf("Failed to put test key: %v", err)
 	}
-	
+
 	// Flush to create an SSTable
 	err = engine.Flush()
 	if err != nil {
 		t.Fatalf("Failed to flush: %v", err)
 	}
-	
+
 	// Find our SSTable
 	var sstable *SSTable
 	engine.mu.RLock()
@@ -136,7 +136,7 @@ func TestGetFromPendingDeletions(t *testing.T) {
 		break
 	}
 	engine.mu.RUnlock()
-	
+
 	// If we didn't find a real SSTable, mock one for testing
 	if sstable == nil {
 		// Create a mock MemTable
@@ -145,10 +145,10 @@ func TestGetFromPendingDeletions(t *testing.T) {
 			Logger:     model.NewNoOpLogger(),
 			Comparator: DefaultComparator,
 		})
-		
+
 		// Add our test key/value
 		memTable.Put(testKey, testValue)
-		
+
 		// Create a temporary SSTable config
 		sstConfig := SSTableConfig{
 			ID:         999,
@@ -156,21 +156,21 @@ func TestGetFromPendingDeletions(t *testing.T) {
 			Logger:     model.NewNoOpLogger(),
 			Comparator: DefaultComparator,
 		}
-		
+
 		// Create a real SSTable
 		sstable, err = CreateSSTable(sstConfig, memTable)
 		if err != nil {
 			t.Fatalf("Failed to create test SSTable: %v", err)
 		}
-		
+
 		// Don't defer Close() as we'll manually close it later
 	}
-	
+
 	// Now move this SSTable to pending deletions
 	if sstable != nil {
 		// First remember the ID for verification
 		sstableID := sstable.ID()
-		
+
 		// If it's in the engine's active list, remove it
 		engine.mu.Lock()
 		newSSTables := make([]*SSTable, 0, len(engine.sstables))
@@ -181,29 +181,29 @@ func TestGetFromPendingDeletions(t *testing.T) {
 		}
 		engine.sstables = newSSTables
 		engine.mu.Unlock()
-		
+
 		// Add to pending deletions
 		engine.deletionMu.Lock()
 		engine.pendingDeletions[sstableID] = sstable
 		engine.deletionTime[sstableID] = time.Now()
 		engine.deletionMu.Unlock()
-		
+
 		// Now verify we can still read from it via the pendingDeletions path
 		value, err := engine.getFromPendingDeletionSSTables(testKey)
 		if err != nil {
 			t.Fatalf("Failed to read from pending deletion SSTable: %v", err)
 		}
-		
+
 		if string(value) != string(testValue) {
 			t.Fatalf("Expected value %q, got %q", testValue, value)
 		}
-		
+
 		// Also verify the regular Get path works by checking both active and pending SSTables
 		value, err = engine.Get(testKey)
 		if err != nil {
 			t.Fatalf("Failed to get key %q: %v", testKey, err)
 		}
-		
+
 		if string(value) != string(testValue) {
 			t.Fatalf("Expected value %q, got %q", testValue, value)
 		}
@@ -237,16 +237,16 @@ func TestConcurrentReadsDuringDeletion(t *testing.T) {
 	// Generate some test data
 	testKey := []byte("test-key")
 	testValue := []byte("test-value")
-	
+
 	err = engine.Put(testKey, testValue)
 	if err != nil {
 		t.Fatalf("Failed to put test key: %v", err)
 	}
-	
+
 	// Set up concurrent read operations
 	doneChan := make(chan struct{})
 	errorChan := make(chan error, 10)
-	
+
 	// Start 5 goroutines that constantly read the test key
 	for i := 0; i < 5; i++ {
 		go func() {
@@ -265,10 +265,10 @@ func TestConcurrentReadsDuringDeletion(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	// Let the readers run for a moment
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Now simulate the SSTable being marked for deletion
 	// First find or create an SSTable
 	var sstable *SSTable
@@ -277,17 +277,17 @@ func TestConcurrentReadsDuringDeletion(t *testing.T) {
 		sstable = engine.sstables[0]
 	}
 	engine.mu.RUnlock()
-	
+
 	if sstable != nil {
 		// Mark it for deletion
 		engine.markSSTableForDeletion(sstable)
-		
+
 		// Let the reads continue while the deletion is pending
 		time.Sleep(500 * time.Millisecond)
-		
+
 		// Signal readers to stop
 		close(doneChan)
-		
+
 		// Check if any errors occurred
 		select {
 		case err := <-errorChan:
@@ -295,15 +295,15 @@ func TestConcurrentReadsDuringDeletion(t *testing.T) {
 		default:
 			// No errors, test passed
 		}
-		
+
 		// Wait for the deletion to complete
 		time.Sleep(1 * time.Second)
-		
+
 		// Verify the SSTable is gone from pending deletions
 		engine.deletionMu.Lock()
 		_, exists := engine.pendingDeletions[sstable.ID()]
 		engine.deletionMu.Unlock()
-		
+
 		if exists {
 			t.Fatalf("SSTable was not physically deleted after the delay")
 		}

@@ -45,7 +45,7 @@ func TestWALCorruptedRecovery(t *testing.T) {
 
 	// Create a custom logger that captures warnings
 	warningCount := 0
-	
+
 	// Custom logger implementation that counts warnings
 	logger := &warningCountLogger{
 		t:            t,
@@ -130,7 +130,7 @@ func TestWALCorruptedRecovery(t *testing.T) {
 	t.Run("Lenient Mode", func(t *testing.T) {
 		// Reset warning count for this test
 		warningCount = 0
-		
+
 		// Replay the WAL into a MemTable
 		memTable := NewMemTable(MemTableConfig{
 			MaxSize:    1024 * 1024,
@@ -141,7 +141,7 @@ func TestWALCorruptedRecovery(t *testing.T) {
 		// The default mode should log warnings but continue processing
 		options := DefaultReplayOptions()
 		err = wal.ReplayWithOptions(memTable, options)
-		
+
 		if err != nil {
 			t.Errorf("Expected lenient WAL replay to succeed despite corruption, got error: %v", err)
 		}
@@ -152,8 +152,8 @@ func TestWALCorruptedRecovery(t *testing.T) {
 		}
 
 		// Verify valid records were still processed
-		validRecords := []struct{
-			key string
+		validRecords := []struct {
+			key   string
 			value string
 		}{
 			{"key1", "value1"},
@@ -176,7 +176,7 @@ func TestWALCorruptedRecovery(t *testing.T) {
 	t.Run("Strict Mode", func(t *testing.T) {
 		// Reset warning count for this test
 		warningCount = 0
-		
+
 		// Replay the WAL into a fresh MemTable
 		memTable := NewMemTable(MemTableConfig{
 			MaxSize:    1024 * 1024,
@@ -189,9 +189,9 @@ func TestWALCorruptedRecovery(t *testing.T) {
 			StrictMode:   true,
 			AtomicTxOnly: true,
 		}
-		
+
 		err = wal.ReplayWithOptions(memTable, options)
-		
+
 		// We expect an error in strict mode
 		if err == nil {
 			t.Error("Expected strict mode WAL replay to fail on corruption, but it succeeded")
@@ -313,9 +313,9 @@ func TestWALIncompleteTransactionRecovery(t *testing.T) {
 		}
 
 		// Verify standalone and complete transaction records were applied
-		validRecords := []struct{
-			key string
-			value string
+		validRecords := []struct {
+			key         string
+			value       string
 			shouldExist bool
 		}{
 			// Standalone records
@@ -361,16 +361,16 @@ func TestWALIncompleteTransactionRecovery(t *testing.T) {
 			StrictMode:   false,
 			AtomicTxOnly: false, // Allow non-atomic transactions
 		}
-		
+
 		err := wal.ReplayWithOptions(memTable, options)
 		if err != nil {
 			t.Errorf("Expected replay to succeed, got error: %v", err)
 		}
 
 		// Verify standalone, complete transaction, and incomplete transaction records
-		validRecords := []struct{
-			key string
-			value string
+		validRecords := []struct {
+			key         string
+			value       string
 			shouldExist bool
 		}{
 			// Standalone records
@@ -409,4 +409,3 @@ func TestWALIncompleteTransactionRecovery(t *testing.T) {
 		t.Fatalf("Failed to close WAL: %v", err)
 	}
 }
-

@@ -49,14 +49,14 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 	// Add operations to the transaction
 	keys := []string{"tx-key1", "tx-key2", "tx-key3"}
 	values := []string{"tx-value1", "tx-value2", "tx-value3"}
-	
+
 	for i := range keys {
 		err = wal.RecordPutInTransaction([]byte(keys[i]), []byte(values[i]), txID)
 		if err != nil {
 			t.Fatalf("Failed to record put in transaction: %v", err)
 		}
 	}
-	
+
 	// Commit the transaction
 	err = wal.CommitTransaction(txID)
 	if err != nil {
@@ -75,19 +75,19 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read WAL file for corruption: %v", err)
 	}
-	
+
 	// Find an offset in the middle of the transaction records
 	// This is a bit of a hack but works for test purposes
 	var corruptedContent []byte
-	
+
 	// For testing purposes, let's corrupt around the middle of the file
 	corruptionPoint := len(walContent) / 2
-	
+
 	// Create the corrupted content by inserting garbage
 	corruptedContent = append(corruptedContent, walContent[:corruptionPoint]...)
 	corruptedContent = append(corruptedContent, []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF}...) // Garbage data
 	corruptedContent = append(corruptedContent, walContent[corruptionPoint:]...)
-	
+
 	// Overwrite the WAL file with our corrupted content
 	err = os.WriteFile(walPath, corruptedContent, 0644)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 	t.Run("Atomic Transactions Only", func(t *testing.T) {
 		// Reset warning count
 		warningCount = 0
-		
+
 		// Replay the WAL into a MemTable with default options
 		memTable := NewMemTable(MemTableConfig{
 			MaxSize:    1024 * 1024,
@@ -121,7 +121,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 			StrictMode:   false, // Only fail on a per-transaction basis
 			AtomicTxOnly: true,  // Ensure transactions are atomic
 		}
-		
+
 		err := wal.ReplayWithOptions(memTable, options)
 		if err != nil {
 			t.Logf("Got replay error in atomic mode: %v", err)
@@ -145,7 +145,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 		for _, key := range keys {
 			value, err := memTable.Get([]byte(key))
 			if err == nil {
-				t.Errorf("Key %q from corrupted transaction should NOT exist but was found with value: %q", 
+				t.Errorf("Key %q from corrupted transaction should NOT exist but was found with value: %q",
 					key, string(value))
 			} else if err != ErrKeyNotFound {
 				t.Errorf("Unexpected error for key %q: %v", key, err)
@@ -157,7 +157,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 	t.Run("Non-Atomic Transactions Allowed", func(t *testing.T) {
 		// Reset warning count
 		warningCount = 0
-		
+
 		// Replay the WAL into a MemTable with non-atomic transactions allowed
 		memTable := NewMemTable(MemTableConfig{
 			MaxSize:    1024 * 1024,
@@ -171,7 +171,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 			StrictMode:   false, // Don't fail on corruption
 			AtomicTxOnly: false, // Allow partial transactions
 		}
-		
+
 		err := wal.ReplayWithOptions(memTable, options)
 		if err != nil {
 			t.Errorf("Expected replay to succeed in non-atomic mode, got error: %v", err)
@@ -205,7 +205,7 @@ func TestWALCorruptedTransactionRecovery(t *testing.T) {
 				}
 			}
 		}
-		
+
 		// Note: This is a weak assertion, but since we don't know exactly which records
 		// were corrupted, we can only check that at least some records were processed
 		// For a more precise test, we'd need to corrupt specific records

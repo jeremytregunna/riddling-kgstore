@@ -72,7 +72,7 @@ func Example_lockFreeMemTable() {
 		fmt.Printf("Error checking key1: %v\n", err)
 		return
 	}
-	
+
 	fmt.Printf("User 1001 exists: %v\n", exists)
 
 	// Flush MemTable to disk

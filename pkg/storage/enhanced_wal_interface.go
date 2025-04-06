@@ -14,14 +14,14 @@ import (
 func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options ReplayOptions) (ReplayStats, error) {
 	// Prepare statistics tracking
 	stats := ReplayStats{
-		StartTime:      time.Now(),
-		RecordCount:    0,
-		AppliedCount:   0,
-		CorruptedCount: 0,
-		TxBeginCount:   0,
-		TxCommitCount:  0,
-		TxRollbackCount:0,
-		SkippedTxCount: 0,
+		StartTime:       time.Now(),
+		RecordCount:     0,
+		AppliedCount:    0,
+		CorruptedCount:  0,
+		TxBeginCount:    0,
+		TxCommitCount:   0,
+		TxRollbackCount: 0,
+		SkippedTxCount:  0,
 	}
 
 	// Open the WAL file for reading
@@ -59,7 +59,7 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 		if err := binary.Read(reader, binary.LittleEndian, &nextTxID); err != nil {
 			return stats, fmt.Errorf("failed to read next transaction ID: %w", err)
 		}
-		
+
 		// Update next transaction ID if higher
 		if nextTxID > wal.nextTxID {
 			wal.nextTxID = nextTxID
@@ -82,34 +82,34 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 				// Reached end of file
 				break
 			}
-			
+
 			stats.CorruptedCount++
 			if errors.Is(err, ErrWALCorrupted) || errors.Is(err, ErrInvalidWALRecord) {
-					wal.logger.Warn("Corrupted WAL record detected at position %d: %v", stats.RecordCount+1, err)
+				wal.logger.Warn("Corrupted WAL record detected at position %d: %v", stats.RecordCount+1, err)
 				if options.StrictMode {
-						return stats, fmt.Errorf("WAL corruption detected at position %d in strict mode: %w", stats.RecordCount+1, err)
+					return stats, fmt.Errorf("WAL corruption detected at position %d in strict mode: %w", stats.RecordCount+1, err)
 				}
 				// In lenient mode, we try to continue
 				continue
 			}
-			
+
 			// Other errors are fatal
 			// Add more detail about where in the WAL we encountered the error
 			return stats, fmt.Errorf("error reading WAL record at position %d: %w", stats.RecordCount+1, err)
 		}
-		
+
 		stats.RecordCount++
-		
+
 		// Process the record based on its type
 		switch record.Type {
 		case RecordTxBegin:
 			stats.TxBeginCount++
 			activeTxs[record.TxID] = make([]WALRecord, 0)
-			
+
 		case RecordTxCommit:
 			stats.TxCommitCount++
 			committedTxs[record.TxID] = true
-			
+
 			// Apply transaction records immediately if they're part of the atomic transaction
 			if txRecords, ok := activeTxs[record.TxID]; ok && options.AtomicTxOnly {
 				for _, txRecord := range txRecords {
@@ -118,13 +118,13 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 				}
 				delete(activeTxs, record.TxID)
 			}
-			
+
 		case RecordTxRollback:
 			stats.TxRollbackCount++
 			rolledBackTxs[record.TxID] = true
 			delete(activeTxs, record.TxID)
 			stats.SkippedTxCount++
-			
+
 		case RecordPut, RecordDelete:
 			if record.TxID == 0 {
 				// Non-transactional records get applied immediately
@@ -136,7 +136,7 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 					// Skip records from rolled back transactions
 					continue
 				}
-				
+
 				if _, committed := committedTxs[record.TxID]; committed {
 					// Apply immediately for already committed transactions
 					applyRecordToInterface(memTable, record)
@@ -154,7 +154,7 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 			}
 		}
 	}
-	
+
 	// Process incomplete transactions
 	for txID, records := range activeTxs {
 		if options.AtomicTxOnly {
@@ -163,17 +163,17 @@ func EnhancedReplayToInterface(wal *WAL, memTable MemTableInterface, options Rep
 			wal.logger.Warn("Incomplete transaction %d skipped (%d operations)", txID, len(records))
 			continue
 		}
-		
+
 		// In non-atomic mode, apply records from incomplete transactions
 		for _, record := range records {
 			applyRecordToInterface(memTable, record)
 			stats.AppliedCount++
 		}
 	}
-	
+
 	stats.EndTime = time.Now()
 	stats.Duration = stats.EndTime.Sub(stats.StartTime)
-	
+
 	return stats, nil
 }
 

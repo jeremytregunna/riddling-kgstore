@@ -30,11 +30,11 @@ type LockFreeMemTableConfig struct {
 // LockFreeMemTable uses a lock-free concurrent skiplist to store key-value pairs
 // It provides thread-safe access without using mutexes
 type LockFreeMemTable struct {
-	skiplist       *ConcurrentSkipList // Lock-free skiplist
-	maxSize        uint64              // Maximum size in bytes
-	isFlushed      uint32              // Whether the table has been flushed (atomic)
-	logger         model.Logger        // Logger for operations
-	comparator     Comparator          // Function for comparing keys
+	skiplist   *ConcurrentSkipList // Lock-free skiplist
+	maxSize    uint64              // Maximum size in bytes
+	isFlushed  uint32              // Whether the table has been flushed (atomic)
+	logger     model.Logger        // Logger for operations
+	comparator Comparator          // Function for comparing keys
 }
 
 // NewLockFreeMemTable creates a new empty LockFreeMemTable
@@ -50,11 +50,11 @@ func NewLockFreeMemTable(config LockFreeMemTableConfig) *LockFreeMemTable {
 	}
 
 	return &LockFreeMemTable{
-		skiplist:       NewConcurrentSkipList(config.Comparator),
-		maxSize:        config.MaxSize,
-		isFlushed:      0, // Not flushed initially
-		logger:         config.Logger,
-		comparator:     config.Comparator,
+		skiplist:   NewConcurrentSkipList(config.Comparator),
+		maxSize:    config.MaxSize,
+		isFlushed:  0, // Not flushed initially
+		logger:     config.Logger,
+		comparator: config.Comparator,
 	}
 }
 
@@ -172,7 +172,7 @@ func (m *LockFreeMemTable) DeleteWithVersion(key []byte, version uint64) error {
 
 	// Delete from skiplist
 	usedVersion, deleted := m.skiplist.DeleteWithVersion(key, version)
-	
+
 	if deleted {
 		m.logger.Debug("Deleted entry from LockFreeMemTable with version %d, key size: %d",
 			usedVersion, len(key))
@@ -242,7 +242,7 @@ func (m *LockFreeMemTable) GetEntriesWithMetadata() [][]byte {
 
 	// Start traversal from level 0
 	curr := m.skiplist.head.next[0]
-	
+
 	// Traverse all nodes
 	for curr != m.skiplist.tail {
 		// Skip physically deleted nodes (marked for removal)
@@ -250,32 +250,32 @@ func (m *LockFreeMemTable) GetEntriesWithMetadata() [][]byte {
 			curr = curr.next[0]
 			continue
 		}
-		
+
 		// Add key and value to result
 		keyCopy := make([]byte, len(curr.key))
 		valueCopy := make([]byte, len(curr.value))
 		copy(keyCopy, curr.key)
 		copy(valueCopy, curr.value)
-		
+
 		entries = append(entries, keyCopy)
 		entries = append(entries, valueCopy)
-		
+
 		// Convert version to 8-byte array
 		versionBytes := make([]byte, 8)
 		binary.LittleEndian.PutUint64(versionBytes, curr.version)
 		entries = append(entries, versionBytes)
-		
+
 		// Convert deletion flag to 1-byte array
 		var deletedFlag byte = 0
 		if atomic.LoadUint32(&curr.isDeleted) == 1 {
 			deletedFlag = 1
 		}
 		entries = append(entries, []byte{deletedFlag})
-		
+
 		// Move to next node
 		curr = curr.next[0]
 	}
-	
+
 	return entries
 }
 

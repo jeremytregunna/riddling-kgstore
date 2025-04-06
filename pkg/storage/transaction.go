@@ -57,7 +57,7 @@ func NewTransactionManager(dataDir string, logger model.Logger, wal *WAL) (*Tran
 
 	// Initial transaction ID
 	nextTxID := uint64(1)
-	
+
 	// Check if we have a persisted transaction state file
 	stateFilePath := filepath.Join(txDir, "tx_state")
 	if stateData, err := os.ReadFile(stateFilePath); err == nil {
@@ -67,7 +67,7 @@ func NewTransactionManager(dataDir string, logger model.Logger, wal *WAL) (*Tran
 			logger.Info("Restored transaction ID from state file: %d", nextTxID)
 		}
 	}
-	
+
 	// Also check if WAL has a higher transaction ID
 	if wal != nil && wal.nextTxID > nextTxID {
 		logger.Info("Using higher transaction ID from WAL: %d (was %d)", wal.nextTxID, nextTxID)
@@ -133,7 +133,7 @@ func (tm *TransactionManager) Begin() *Transaction {
 
 	tm.activeTransactions[txID] = tx
 	tm.logger.Debug("Started transaction %d", txID)
-	
+
 	return tx
 }
 
@@ -157,7 +157,7 @@ func (tm *TransactionManager) Close() error {
 
 	// Clear active transactions
 	tm.activeTransactions = make(map[uint64]*Transaction)
-	
+
 	// Persist the next transaction ID to a file for recovery
 	stateFilePath := filepath.Join(tm.transactionDir, "tx_state")
 	if err := os.WriteFile(stateFilePath, []byte(fmt.Sprintf("%d", tm.nextTxID)), 0644); err != nil {
@@ -173,7 +173,7 @@ func (tm *TransactionManager) Close() error {
 func (tm *TransactionManager) recoverTransactions() error {
 	// Get WAL transaction status first if available
 	walTxs := make(map[uint64]string) // txID -> status (committed, rolledback, active)
-	
+
 	// Process file-based transactions
 	entries, err := os.ReadDir(tm.transactionDir)
 	if err != nil {
@@ -204,12 +204,12 @@ func (tm *TransactionManager) recoverTransactions() error {
 			} else {
 				status = "uncommitted"
 			}
-			
+
 			// If we have WAL information about this transaction, check for consistency
 			if walStatus, exists := walTxs[txID]; exists && walStatus != status {
 				tm.logger.Warn("Transaction %d status mismatch: WAL says %s, file says %s",
 					txID, walStatus, status)
-				
+
 				// WAL is the source of truth for transaction boundaries, but files
 				// are the source of truth for the actual operations
 				if walStatus == "committed" && status == "uncommitted" {
@@ -251,7 +251,7 @@ func (tm *TransactionManager) recoverTransactions() error {
 					// Successfully rolled back, clean up file
 					os.Remove(filepath.Join(tm.transactionDir, entry.Name()))
 				}
-				
+
 				// Also rollback in WAL if needed and not already rolled back
 				if tm.wal != nil && walTxs[txID] != "rolledback" {
 					if err := tm.wal.RollbackTransaction(txID); err != nil {
@@ -556,7 +556,7 @@ func (tx *Transaction) Rollback() error {
 		// Already committed, cannot rollback
 		return fmt.Errorf("transaction already committed")
 	}
-	
+
 	// Record transaction rollback in WAL if available
 	if tx.manager.wal != nil {
 		if err := tx.manager.wal.RollbackTransaction(tx.id); err != nil {

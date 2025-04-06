@@ -18,13 +18,13 @@ func TestVersionedCompaction(t *testing.T) {
 	oldMemTable := NewMemTable(DefaultConfig())
 	key := []byte("test-key")
 	oldValue := []byte("old-value")
-	
+
 	// Use explicit version for demonstration
 	err := oldMemTable.PutWithVersion(key, oldValue, 1)
 	if err != nil {
 		t.Fatalf("Failed to put entry in old MemTable: %v", err)
 	}
-	
+
 	// Create the "old" SSTable (level 1)
 	oldSSTableConfig := SSTableConfig{
 		ID:         1,
@@ -32,23 +32,23 @@ func TestVersionedCompaction(t *testing.T) {
 		Logger:     model.DefaultLoggerInstance,
 		Comparator: DefaultComparator,
 	}
-	
+
 	oldSSTable, err := CreateSSTable(oldSSTableConfig, oldMemTable)
 	if err != nil {
 		t.Fatalf("Failed to create old SSTable: %v", err)
 	}
 	defer oldSSTable.Close()
-	
+
 	// Create MemTable with the same key but a newer value (version 2)
 	newMemTable := NewMemTable(DefaultConfig())
 	newValue := []byte("new-value")
-	
+
 	// Use higher version for demonstration
 	err = newMemTable.PutWithVersion(key, newValue, 2)
 	if err != nil {
 		t.Fatalf("Failed to put entry in new MemTable: %v", err)
 	}
-	
+
 	// Create the "new" SSTable (level 0)
 	newSSTableConfig := SSTableConfig{
 		ID:         2,
@@ -56,17 +56,17 @@ func TestVersionedCompaction(t *testing.T) {
 		Logger:     model.DefaultLoggerInstance,
 		Comparator: DefaultComparator,
 	}
-	
+
 	newSSTable, err := CreateSSTable(newSSTableConfig, newMemTable)
 	if err != nil {
 		t.Fatalf("Failed to create new SSTable: %v", err)
 	}
 	defer newSSTable.Close()
-	
+
 	// Now simulate compaction by merging the two SSTables
 	// First, create a merged MemTable
 	mergedMemTable := NewMemTable(DefaultConfig())
-	
+
 	// A naive compaction would merge without considering versions:
 	// 1. Read from "old" SSTable
 	oldIter, err := oldSSTable.Iterator()
@@ -74,14 +74,14 @@ func TestVersionedCompaction(t *testing.T) {
 		t.Fatalf("Failed to create old iterator: %v", err)
 	}
 	defer oldIter.Close()
-	
+
 	// 2. Read from "new" SSTable
 	newIter, err := newSSTable.Iterator()
 	if err != nil {
 		t.Fatalf("Failed to create new iterator: %v", err)
 	}
 	defer newIter.Close()
-	
+
 	// Our improved approach uses version-aware compaction:
 	// 1. Create iterators that include version information
 	versionedNewIter, err := newSSTable.IteratorWithOptions(IteratorOptions{IncludeTombstones: true})
@@ -89,25 +89,25 @@ func TestVersionedCompaction(t *testing.T) {
 		t.Fatalf("Failed to create versioned new iterator: %v", err)
 	}
 	defer versionedNewIter.Close()
-	
+
 	versionedOldIter, err := oldSSTable.IteratorWithOptions(IteratorOptions{IncludeTombstones: true})
 	if err != nil {
 		t.Fatalf("Failed to create versioned old iterator: %v", err)
 	}
 	defer versionedOldIter.Close()
-	
+
 	// 2. Gather all keys and their versioned values
 	keyVersions := make(map[string]struct {
 		value     []byte
 		version   uint64
 		isDeleted bool
 	})
-	
+
 	// Process entries from "new" SSTable (level 0)
 	for versionedNewIter.Valid() {
 		key := string(versionedNewIter.Key())
 		currentVersion := versionedNewIter.Version()
-		
+
 		// If we haven't seen this key before, or if this version is higher than what we've seen
 		existingEntry, exists := keyVersions[key]
 		if !exists || currentVersion > existingEntry.version {
@@ -121,17 +121,17 @@ func TestVersionedCompaction(t *testing.T) {
 				isDeleted: versionedNewIter.IsDeleted(),
 			}
 		}
-		
+
 		if err := versionedNewIter.Next(); err != nil {
 			t.Fatalf("Failed to advance new iterator: %v", err)
 		}
 	}
-	
+
 	// Process entries from "old" SSTable (level 1)
 	for versionedOldIter.Valid() {
 		key := string(versionedOldIter.Key())
 		currentVersion := versionedOldIter.Version()
-		
+
 		// If we haven't seen this key before, or if this version is higher than what we've seen
 		existingEntry, exists := keyVersions[key]
 		if !exists || currentVersion > existingEntry.version {
@@ -145,12 +145,12 @@ func TestVersionedCompaction(t *testing.T) {
 				isDeleted: versionedOldIter.IsDeleted(),
 			}
 		}
-		
+
 		if err := versionedOldIter.Next(); err != nil {
 			t.Fatalf("Failed to advance old iterator: %v", err)
 		}
 	}
-	
+
 	// 3. Add the entries with the highest version to the merged MemTable
 	for keyStr, entry := range keyVersions {
 		keyBytes := []byte(keyStr)
@@ -166,17 +166,17 @@ func TestVersionedCompaction(t *testing.T) {
 			}
 		}
 	}
-	
+
 	// 4. Verify the merged MemTable has the correct (newer) value
 	mergedValue, err := mergedMemTable.Get(key)
 	if err != nil {
 		t.Fatalf("Failed to get key from merged MemTable: %v", err)
 	}
-	
+
 	if !bytes.Equal(mergedValue, newValue) {
-		t.Fatalf("Merged MemTable has incorrect value: expected %s, got %s", 
+		t.Fatalf("Merged MemTable has incorrect value: expected %s, got %s",
 			newValue, mergedValue)
 	}
-	
+
 	t.Logf("Successfully preserved newer value during version-aware compaction")
 }

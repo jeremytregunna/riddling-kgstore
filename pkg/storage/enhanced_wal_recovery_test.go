@@ -14,9 +14,9 @@ import (
 func ApplyIncompleteTransaction(w *WAL, memTable *MemTable, txID uint64, operations []WALRecord, options ReplayOptions) int {
 	if !options.AtomicTxOnly {
 		// If non-atomic transactions are allowed, apply operations from incomplete transactions
-		w.logger.Debug("Applying incomplete transaction %d with %d operations (non-atomic mode)", 
+		w.logger.Debug("Applying incomplete transaction %d with %d operations (non-atomic mode)",
 			txID, len(operations))
-		
+
 		txApplyCount := 0
 		for _, op := range operations {
 			if op.Type == RecordPut || op.Type == RecordDelete {
@@ -31,7 +31,7 @@ func ApplyIncompleteTransaction(w *WAL, memTable *MemTable, txID uint64, operati
 					version := txID
 					err = memTable.DeleteWithVersion(op.Key, version)
 				}
-				
+
 				if err != nil {
 					w.logger.Warn("Failed to apply operation from incomplete transaction %d: %v", txID, err)
 				} else {
@@ -39,8 +39,8 @@ func ApplyIncompleteTransaction(w *WAL, memTable *MemTable, txID uint64, operati
 				}
 			}
 		}
-		
-		w.logger.Debug("Applied %d operations from incomplete transaction %d (non-atomic mode)", 
+
+		w.logger.Debug("Applied %d operations from incomplete transaction %d (non-atomic mode)",
 			txApplyCount, txID)
 		return txApplyCount
 	}
@@ -65,7 +65,7 @@ func CheckTransactionCorruption(w *WAL, txID uint64, operations []WALRecord, opt
 			}
 		}
 	}
-	
+
 	// In atomic mode, skip the entire transaction if any corrupted records
 	return hasBadRecords && options.AtomicTxOnly
 }
@@ -93,7 +93,7 @@ func TestComplexWALRecovery(t *testing.T) {
 	// - Incomplete transactions
 	// - Rolled back transactions
 	walPath := filepath.Join(tempDir, "complex.wal")
-	
+
 	wal, err := NewWAL(WALConfig{
 		Path:        walPath,
 		SyncOnWrite: true,
@@ -241,7 +241,7 @@ func TestComplexWALRecovery(t *testing.T) {
 			}
 			expectedValue := "value-" + key
 			if !bytes.Equal(value, []byte(expectedValue)) {
-				t.Errorf("For standalone key %q, expected value %q, got %q", 
+				t.Errorf("For standalone key %q, expected value %q, got %q",
 					key, expectedValue, string(value))
 			}
 		}
@@ -255,7 +255,7 @@ func TestComplexWALRecovery(t *testing.T) {
 				foundComplete = true
 				expectedValue := "value-" + key
 				if !bytes.Equal(value, []byte(expectedValue)) {
-					t.Errorf("For complete transaction key %q, expected value %q, got %q", 
+					t.Errorf("For complete transaction key %q, expected value %q, got %q",
 						key, expectedValue, string(value))
 				}
 			}
@@ -333,7 +333,7 @@ func TestComplexWALRecovery(t *testing.T) {
 				incompleteApplied = true
 				expectedValue := "value-" + key
 				if !bytes.Equal(value, []byte(expectedValue)) {
-					t.Errorf("For incomplete transaction key %q, expected value %q, got %q", 
+					t.Errorf("For incomplete transaction key %q, expected value %q, got %q",
 						key, expectedValue, string(value))
 				}
 			}
@@ -378,11 +378,11 @@ func TestComplexWALRecovery(t *testing.T) {
 
 		// Replay with strict mode enabled
 		options := ReplayOptions{
-			StrictMode:   true,  // Fail on corruption
+			StrictMode:   true, // Fail on corruption
 			AtomicTxOnly: true,
 		}
 		err = wal.ReplayWithOptions(memTable, options)
-		
+
 		// Expect an error in strict mode
 		if err == nil {
 			t.Error("Expected replay to fail in strict mode, but it succeeded")

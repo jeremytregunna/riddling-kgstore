@@ -244,25 +244,25 @@ func TestAtomicSSTableCreation(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Create a MemTable with test data
 	memTable := NewMemTable(MemTableConfig{
 		MaxSize:    1024 * 1024,
 		Logger:     model.NewNoOpLogger(),
 		Comparator: DefaultComparator,
 	})
-	
+
 	// Add some key-value pairs
 	testData := map[string]string{
 		"key1": "value1",
 		"key2": "value2",
 		"key3": "value3",
 	}
-	
+
 	for key, value := range testData {
 		memTable.Put([]byte(key), []byte(value))
 	}
-	
+
 	// Create an SSTable from the MemTable
 	sstConfig := SSTableConfig{
 		ID:         42,
@@ -270,13 +270,13 @@ func TestAtomicSSTableCreation(t *testing.T) {
 		Logger:     model.NewNoOpLogger(),
 		Comparator: DefaultComparator,
 	}
-	
+
 	// Create the SSTable
 	_, err = CreateSSTable(sstConfig, memTable)
 	if err != nil {
 		t.Fatalf("Failed to create SSTable: %v", err)
 	}
-	
+
 	// Verify that the SSTable was created
 	if _, err := os.Stat(filepath.Join(tempDir, "42.data")); os.IsNotExist(err) {
 		t.Fatal("SSTable data file was not created")
@@ -284,26 +284,26 @@ func TestAtomicSSTableCreation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tempDir, "42.index")); os.IsNotExist(err) {
 		t.Fatal("SSTable index file was not created")
 	}
-	
+
 	// Check that no temporary directories remain
 	entries, err := os.ReadDir(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to read temporary directory: %v", err)
 	}
-	
+
 	for _, entry := range entries {
 		if entry.IsDir() && strings.Contains(entry.Name(), "sstable_42_tmp") {
 			t.Errorf("Temporary directory %s was not cleaned up", entry.Name())
 		}
 	}
-	
+
 	// Ensure we have exactly the expected files
 	expectedFiles := map[string]bool{
 		"42.data":   true,
 		"42.index":  true,
 		"42.filter": true,
 	}
-	
+
 	fileCount := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -313,7 +313,7 @@ func TestAtomicSSTableCreation(t *testing.T) {
 			}
 		}
 	}
-	
+
 	if fileCount != len(expectedFiles) {
 		t.Errorf("Expected %d files, found %d", len(expectedFiles), fileCount)
 	}

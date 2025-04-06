@@ -53,10 +53,10 @@ func DefaultConfig() MemTableConfig {
 type skipNode struct {
 	key       []byte
 	value     []byte
-	size      uint64    // size in bytes
+	size      uint64 // size in bytes
 	forward   []*skipNode
-	isDeleted bool      // Marker for lazy deletion
-	version   uint64    // Version number for this record
+	isDeleted bool   // Marker for lazy deletion
+	version   uint64 // Version number for this record
 }
 
 // MemTable uses a skip list to store key-value pairs in memory in a sorted order
@@ -201,7 +201,7 @@ func (m *MemTable) PutWithVersion(key, value []byte, version uint64) error {
 			node.size = entrySize
 			m.size = m.size - oldSize + entrySize
 			m.count++ // Increment count since we're reusing a previously deleted node
-			m.logger.Debug("Reactivated deleted entry in MemTable with version %d, key size: %d, value size: %d", 
+			m.logger.Debug("Reactivated deleted entry in MemTable with version %d, key size: %d, value size: %d",
 				currentVersion, len(key), len(value))
 			return nil
 		}
@@ -218,7 +218,7 @@ func (m *MemTable) PutWithVersion(key, value []byte, version uint64) error {
 		node.version = currentVersion
 		node.size = entrySize
 		m.size = m.size - oldSize + entrySize
-		m.logger.Debug("Updated entry in MemTable with version %d, key size: %d, value size: %d", 
+		m.logger.Debug("Updated entry in MemTable with version %d, key size: %d, value size: %d",
 			currentVersion, len(key), len(value))
 		return nil
 	}
@@ -256,7 +256,7 @@ func (m *MemTable) PutWithVersion(key, value []byte, version uint64) error {
 	m.size += entrySize
 	m.count++
 
-	m.logger.Debug("Added new entry to MemTable with version %d, key size: %d, value size: %d", 
+	m.logger.Debug("Added new entry to MemTable with version %d, key size: %d, value size: %d",
 		currentVersion, len(key), len(value))
 	return nil
 }
@@ -428,7 +428,7 @@ func (m *MemTable) GetEntriesWithMetadata() [][]byte {
 	// [3]: isDeleted flag (as 1-byte binary)
 	// So 4 entries per key-value pair, not just 2
 	totalEntries := m.count
-	
+
 	// Count all nodes, including deleted ones (that haven't been flushed yet)
 	if m.head != nil {
 		totalEntries = 0
@@ -438,7 +438,7 @@ func (m *MemTable) GetEntriesWithMetadata() [][]byte {
 			current = current.forward[0]
 		}
 	}
-	
+
 	entries := make([][]byte, 0, totalEntries*4)
 
 	// Traverse the skip list at level 0 (which contains all nodes)
@@ -447,19 +447,19 @@ func (m *MemTable) GetEntriesWithMetadata() [][]byte {
 		// Add key, value, version, and deletion flag to the results
 		entries = append(entries, append([]byte{}, current.key...))
 		entries = append(entries, append([]byte{}, current.value...))
-		
+
 		// Convert version to 8-byte array
 		versionBytes := make([]byte, 8)
 		binary.LittleEndian.PutUint64(versionBytes, current.version)
 		entries = append(entries, versionBytes)
-		
+
 		// Convert deletion flag to 1-byte array
 		var deletedFlag byte = 0
 		if current.isDeleted {
 			deletedFlag = 1
 		}
 		entries = append(entries, []byte{deletedFlag})
-		
+
 		current = current.forward[0]
 	}
 

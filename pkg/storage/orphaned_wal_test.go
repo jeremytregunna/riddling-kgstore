@@ -34,7 +34,7 @@ func TestTransactionRollbackSimple(t *testing.T) {
 	if err := os.MkdirAll(dbDir+"/wal", 0755); err != nil {
 		t.Fatalf("Failed to create WAL directory: %v", err)
 	}
-	
+
 	wal, err := NewWAL(WALConfig{
 		Path:        walPath,
 		SyncOnWrite: true,
@@ -131,7 +131,7 @@ func TestStorageEnginePutIsAtomic(t *testing.T) {
 	}
 	defer os.RemoveAll(dbDir)
 
-	// We don't need to create a storage engine for this test, 
+	// We don't need to create a storage engine for this test,
 	// as we're testing the WAL and MemTable directly
 
 	// Create a new WAL directly to verify its state

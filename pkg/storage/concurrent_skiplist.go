@@ -14,21 +14,21 @@ const maxHeight = 12
 type Node struct {
 	key       []byte
 	value     []byte
-	marked    uint32    // Marked for deletion (atomically accessed)
-	size      uint64    // Size in bytes
-	next      []*Node   // Array of next pointers at each level
-	version   uint64    // Version number for this record
-	isDeleted uint32    // Deletion marker (atomically accessed)
+	marked    uint32  // Marked for deletion (atomically accessed)
+	size      uint64  // Size in bytes
+	next      []*Node // Array of next pointers at each level
+	version   uint64  // Version number for this record
+	isDeleted uint32  // Deletion marker (atomically accessed)
 }
 
 // ConcurrentSkipList is a lock-free skiplist implementation
 type ConcurrentSkipList struct {
-	head           *Node  // Pointer to the head (sentinel) node
-	tail           *Node  // Pointer to the tail (sentinel) node
-	height         int32  // Current maximum height (atomically accessed)
-	size           int64  // Total size in bytes (atomically accessed)
-	count          int64  // Number of entries (atomically accessed)
-	currentVersion uint64 // Current version counter (atomically accessed)
+	head           *Node      // Pointer to the head (sentinel) node
+	tail           *Node      // Pointer to the tail (sentinel) node
+	height         int32      // Current maximum height (atomically accessed)
+	size           int64      // Total size in bytes (atomically accessed)
+	count          int64      // Number of entries (atomically accessed)
+	currentVersion uint64     // Current version counter (atomically accessed)
 	comparator     Comparator // Function for comparing keys
 }
 
@@ -100,7 +100,7 @@ func (cs *ConcurrentSkipList) findNodeAndPrevs(key []byte) (*Node, []*Node) {
 	if currHeight <= 0 {
 		currHeight = 1 // Ensure we at least check level 0
 	}
-	
+
 	for i := currHeight - 1; i >= 0; i-- {
 		// Check if curr is valid and has next pointers
 		if curr == nil || curr.next == nil || i >= len(curr.next) {
@@ -111,12 +111,12 @@ func (cs *ConcurrentSkipList) findNodeAndPrevs(key []byte) (*Node, []*Node) {
 				continue
 			}
 		}
-		
+
 		// Traverse the current level
 		for {
 			// Get next pointer safely
 			next := curr.next[i]
-			
+
 			// Check for nil pointer or if we've reached the tail
 			if next == nil || next == cs.tail {
 				break
@@ -128,7 +128,7 @@ func (cs *ConcurrentSkipList) findNodeAndPrevs(key []byte) (*Node, []*Node) {
 				curr = next
 				continue
 			}
-			
+
 			// Safety check for key
 			if next.key == nil {
 				// Skip invalid nodes
@@ -146,7 +146,7 @@ func (cs *ConcurrentSkipList) findNodeAndPrevs(key []byte) (*Node, []*Node) {
 				break
 			}
 		}
-		
+
 		// Save predecessor at this level
 		prevs[i] = curr
 	}
@@ -154,8 +154,8 @@ func (cs *ConcurrentSkipList) findNodeAndPrevs(key []byte) (*Node, []*Node) {
 	// Check if we found the exact key - with appropriate safety checks
 	if prevs[0] != nil && prevs[0].next != nil && len(prevs[0].next) > 0 {
 		next := prevs[0].next[0]
-		if next != nil && next != cs.tail && next.key != nil && 
-		   cs.comparator(next.key, key) == 0 && atomic.LoadUint32(&next.marked) == 0 {
+		if next != nil && next != cs.tail && next.key != nil &&
+			cs.comparator(next.key, key) == 0 && atomic.LoadUint32(&next.marked) == 0 {
 			return next, prevs
 		}
 	}
@@ -187,16 +187,16 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 	if node != nil {
 		// Update value atomically
 		oldSize := node.size
-		
+
 		// Create a new copy of the value
 		newValue := make([]byte, len(value))
 		copy(newValue, value)
-		
+
 		// Atomically update the node
 		node.value = newValue
 		node.size = entrySize
 		atomic.StoreUint64(&node.version, version)
-		
+
 		// If node was deleted, mark as not deleted and update count
 		if atomic.LoadUint32(&node.isDeleted) == 1 {
 			if atomic.CompareAndSwapUint32(&node.isDeleted, 1, 0) {
@@ -204,11 +204,11 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 				isInsert = true
 			}
 		}
-		
+
 		// Update size tracker
 		diff := int64(entrySize) - int64(oldSize)
 		atomic.AddInt64(&cs.size, diff)
-		
+
 		return version, isInsert
 	}
 
@@ -221,7 +221,7 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 		size:    entrySize,
 		version: version,
 	}
-	
+
 	// Copy the key and value
 	copy(newNode.key, key)
 	copy(newNode.value, value)
@@ -243,8 +243,8 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 		if i >= currHeight {
 			// For levels above current height, link from head
 			newNode.next[i] = cs.head.next[i]
-		} else if prevs != nil && i < len(prevs) && prevs[i] != nil && 
-		          i < len(prevs[i].next) {
+		} else if prevs != nil && i < len(prevs) && prevs[i] != nil &&
+			i < len(prevs[i].next) {
 			// Normal case - link from predecessor
 			newNode.next[i] = prevs[i].next[i]
 		} else {
@@ -265,26 +265,26 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 			// If insertion at level 0 fails, another thread modified the list
 			// Find new predecessors and try again
 			_, prevs = cs.findNodeAndPrevs(key)
-			
+
 			// Check if the key was added by another thread
 			if prevs[0].next[0] != cs.tail && cs.comparator(prevs[0].next[0].key, key) == 0 {
 				// Key already exists now, update it instead
 				node = prevs[0].next[0]
-				
+
 				// Update the node (similar logic as the update case above)
 				oldSize := node.size
 				node.value = make([]byte, len(value))
 				copy(node.value, value)
 				node.size = entrySize
 				atomic.StoreUint64(&node.version, version)
-				
+
 				// Update size tracker
 				diff := int64(entrySize) - int64(oldSize)
 				atomic.AddInt64(&cs.size, diff)
-				
+
 				return version, false // Not a new insert
 			}
-			
+
 			// Update node's next pointers with new successors
 			for i := 0; i < height; i++ {
 				if i < len(prevs) {
@@ -299,30 +299,30 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 	for i := 1; i < height && i < len(prevs); i++ {
 		// Make sure prevs[i] isn't nil before proceeding
 		if prevs[i] == nil || prevs[i].next == nil || len(prevs[i].next) <= i {
-			continue  // Skip this level if prevs[i] is invalid
+			continue // Skip this level if prevs[i] is invalid
 		}
-		
+
 		// Only proceed if the node still exists and isn't marked
 		// This is an extra safety check since another thread might have modified the list
 		if atomic.LoadUint32(&newNode.marked) == 1 {
 			break // Stop if the node has been marked for deletion
 		}
-		
+
 		// Get current successor safely
 		succ := prevs[i].next[i]
 		if succ == nil {
 			continue // Skip if successor is nil
 		}
-		
+
 		// Try to insert between predecessor and successor
 		newNode.next[i] = succ
-		
+
 		// Use CAS to atomically update the link
 		atomic.CompareAndSwapPointer(
 			(*unsafe.Pointer)(unsafe.Pointer(&prevs[i].next[i])),
 			unsafe.Pointer(succ),
 			unsafe.Pointer(newNode))
-		
+
 		// We don't retry or check success - higher levels are best-effort
 		// The key will always be accessible from level 0
 	}
@@ -330,7 +330,7 @@ func (cs *ConcurrentSkipList) PutWithVersion(key, value []byte, version uint64) 
 	// Update size and count
 	atomic.AddInt64(&cs.size, int64(entrySize))
 	atomic.AddInt64(&cs.count, 1)
-	
+
 	return version, true
 }
 
@@ -342,13 +342,13 @@ func (cs *ConcurrentSkipList) Get(key []byte) ([]byte, uint64, bool) {
 
 	// Start from head
 	curr := cs.head
-	
+
 	// Start from the highest level and work down
 	currHeight := int(atomic.LoadInt32(&cs.height))
 	if currHeight <= 0 {
 		currHeight = 1 // Ensure we at least check level 0
 	}
-	
+
 	for i := currHeight - 1; i >= 0; i-- {
 		// Safety check for current node
 		if curr == nil || curr.next == nil || i >= len(curr.next) {
@@ -357,26 +357,26 @@ func (cs *ConcurrentSkipList) Get(key []byte) ([]byte, uint64, bool) {
 				continue
 			}
 		}
-		
+
 		for {
 			// Get next safely
 			next := curr.next[i]
 			if next == nil || next == cs.tail {
 				break // Reached the end at this level
 			}
-			
+
 			// Skip deleted nodes
 			if atomic.LoadUint32(&next.marked) == 1 {
 				curr = next
 				continue
 			}
-			
+
 			// Safety check for key
 			if next.key == nil {
 				curr = next
 				continue
 			}
-			
+
 			// Compare keys
 			cmp := cs.comparator(next.key, key)
 			if cmp < 0 {
@@ -388,30 +388,30 @@ func (cs *ConcurrentSkipList) Get(key []byte) ([]byte, uint64, bool) {
 			}
 		}
 	}
-	
+
 	// Safety check before accessing level 0
 	if curr == nil || curr.next == nil || len(curr.next) == 0 {
 		return nil, 0, false
 	}
-	
+
 	// Check the node at level 0 (if any)
 	next := curr.next[0]
-	if next != nil && next != cs.tail && next.key != nil && 
-	   cs.comparator(next.key, key) == 0 && 
-	   atomic.LoadUint32(&next.marked) == 0 && 
-	   atomic.LoadUint32(&next.isDeleted) == 0 {
-		
+	if next != nil && next != cs.tail && next.key != nil &&
+		cs.comparator(next.key, key) == 0 &&
+		atomic.LoadUint32(&next.marked) == 0 &&
+		atomic.LoadUint32(&next.isDeleted) == 0 {
+
 		// Safety check for value
 		if next.value == nil {
 			return nil, 0, false
 		}
-		
+
 		// Found the key and it's not deleted
 		valueCopy := make([]byte, len(next.value))
 		copy(valueCopy, next.value)
 		return valueCopy, atomic.LoadUint64(&next.version), true
 	}
-	
+
 	// Key not found or marked as deleted
 	return nil, 0, false
 }
@@ -449,11 +449,11 @@ func (cs *ConcurrentSkipList) DeleteWithVersion(key []byte, version uint64) (uin
 
 	// Update version
 	atomic.StoreUint64(&node.version, version)
-	
+
 	// Update size and count
 	atomic.AddInt64(&cs.size, -int64(node.size))
 	atomic.AddInt64(&cs.count, -1)
-	
+
 	return version, true
 }
 
@@ -468,7 +468,7 @@ func (cs *ConcurrentSkipList) ForceDelete(key []byte) bool {
 	var node *Node
 	var prevs []*Node
 	var marked bool = false
-	
+
 	// First mark the node for deletion
 	for !marked {
 		var newNode *Node
@@ -477,17 +477,17 @@ func (cs *ConcurrentSkipList) ForceDelete(key []byte) bool {
 		if newNode == nil {
 			return false // Key not found
 		}
-		
+
 		// Mark the node as deleted to prevent new references
 		if atomic.CompareAndSwapUint32(&newNode.marked, 0, 1) {
 			node = newNode
-			marked = true 
+			marked = true
 		} else {
 			// If marking failed, someone else might have marked or deleted the node
 			return false
 		}
 	}
-	
+
 	// Now physically remove the node from the list
 	if node == nil {
 		// This shouldn't happen but check anyway
@@ -503,7 +503,7 @@ func (cs *ConcurrentSkipList) ForceDelete(key []byte) bool {
 		for {
 			// Get the successor at this level
 			succ := node.next[level]
-			
+
 			// Try to unlink node at this level
 			if atomic.CompareAndSwapPointer(
 				(*unsafe.Pointer)(unsafe.Pointer(&prevs[level].next[level])),
@@ -511,7 +511,7 @@ func (cs *ConcurrentSkipList) ForceDelete(key []byte) bool {
 				unsafe.Pointer(succ)) {
 				break // Successfully unlinked at this level
 			}
-			
+
 			// If unsuccessful, find new predecessors and retry
 			_, newPrevs := cs.findNodeAndPrevs(key)
 			// If node is no longer in the list, another thread removed it
@@ -531,10 +531,10 @@ func (cs *ConcurrentSkipList) ForceDelete(key []byte) bool {
 	// If node wasn't logically deleted before, update size and count now
 	atomic.AddInt64(&cs.size, -int64(node.size))
 	atomic.AddInt64(&cs.count, -1)
-	
+
 	// Mark as logically deleted too
 	atomic.StoreUint32(&node.isDeleted, 1)
-	
+
 	return true
 }
 
@@ -556,7 +556,7 @@ func (cs *ConcurrentSkipList) GetEntries() [][]byte {
 
 	// Start traversal from level 0
 	curr := cs.head.next[0]
-	
+
 	// Traverse all nodes
 	for curr != cs.tail {
 		// Skip deleted nodes
@@ -564,20 +564,20 @@ func (cs *ConcurrentSkipList) GetEntries() [][]byte {
 			curr = curr.next[0]
 			continue
 		}
-		
+
 		// Add key and value to result
 		keyCopy := make([]byte, len(curr.key))
 		valueCopy := make([]byte, len(curr.value))
 		copy(keyCopy, curr.key)
 		copy(valueCopy, curr.value)
-		
+
 		entries = append(entries, keyCopy)
 		entries = append(entries, valueCopy)
-		
+
 		// Move to next node
 		curr = curr.next[0]
 	}
-	
+
 	return entries
 }
 
@@ -593,21 +593,21 @@ func (cs *ConcurrentSkipList) Clear() {
 		key:  nil,
 		next: make([]*Node, maxHeight),
 	}
-	
+
 	newTail := &Node{
 		key:  nil,
 		next: make([]*Node, maxHeight),
 	}
-	
+
 	// Link head to tail
 	for i := 0; i < maxHeight; i++ {
 		newHead.next[i] = newTail
 	}
-	
+
 	// Replace the existing head
 	cs.head = newHead
 	cs.tail = newTail
-	
+
 	// Reset counters
 	atomic.StoreInt32(&cs.height, 1)
 	atomic.StoreInt64(&cs.size, 0)

@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	
+
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
@@ -90,7 +90,7 @@ func TestWALMixedTransactionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open WAL file for corruption: %v", err)
 	}
-	
+
 	// Append some garbage bytes to simulate corruption
 	corruptData := []byte{0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66}
 	_, err = file.Write(corruptData)
@@ -224,7 +224,7 @@ func TestWALMixedTransactionRecovery(t *testing.T) {
 			StrictMode:   true, // Fail on first corrupted record
 		}
 		err = wal.ReplayWithOptions(memTable, options)
-		
+
 		// Since we injected corruption, we expect replay to fail in strict mode
 		if err == nil {
 			t.Error("Expected replay to fail in strict mode, but it succeeded")

@@ -91,7 +91,7 @@ func TestTransactionManagerBasic(t *testing.T) {
 		if tx == nil {
 			t.Fatal("Failed to begin transaction")
 		}
-		
+
 		txID := tx.id
 
 		// Add some operations
@@ -110,12 +110,12 @@ func TestTransactionManagerBasic(t *testing.T) {
 		// We need to check that the transaction has been marked as inactive
 		// but we shouldn't rely on IsCommitted since that's not necessarily
 		// meant to handle rolled back transactions
-		
+
 		// Verify the transaction was removed from active transactions
 		txManager.mu.RLock()
 		_, stillActive := txManager.activeTransactions[txID]
 		txManager.mu.RUnlock()
-		
+
 		if stillActive {
 			t.Error("Transaction should be removed from active transactions after rollback")
 		}
@@ -123,16 +123,16 @@ func TestTransactionManagerBasic(t *testing.T) {
 		// Try to use the transaction again (should be rejected or be a no-op)
 		tx.AddOperation(TransactionOperation{
 			Type:   "add",
-			Target: "sstable", 
+			Target: "sstable",
 			ID:     2002,
 		})
-		
+
 		// Start a new transaction to ensure we can still use the transaction manager
 		newTx := txManager.Begin()
 		if newTx == nil {
 			t.Fatal("Failed to begin new transaction after rollback")
 		}
-		
+
 		// Clean up
 		newTx.Rollback()
 	})
@@ -162,7 +162,7 @@ func TestTransactionManagerWithWAL(t *testing.T) {
 	// Use separate subdirectories for each test to avoid file conflicts
 	walIntegrationDir := filepath.Join(tempDir, "integration")
 	crashRecoveryDir := filepath.Join(tempDir, "recovery")
-	
+
 	// Create subdirectories
 	if err := os.MkdirAll(walIntegrationDir, 0755); err != nil {
 		t.Fatalf("Failed to create integration directory: %v", err)
@@ -355,7 +355,7 @@ func TestTransactionFileOperations(t *testing.T) {
 		dataFile := filepath.Join(sstableDir, fmt.Sprintf("%d.data", id))
 		indexFile := filepath.Join(sstableDir, fmt.Sprintf("%d.index", id))
 		filterFile := filepath.Join(sstableDir, fmt.Sprintf("%d.filter", id))
-		
+
 		createDummyFile(t, dataFile)
 		createDummyFile(t, indexFile)
 		createDummyFile(t, filterFile)
@@ -390,7 +390,7 @@ func TestTransactionFileOperations(t *testing.T) {
 
 		// Begin a transaction
 		tx := txManager.Begin()
-		
+
 		// Add operation to remove SSTable 5001
 		tx.AddOperation(TransactionOperation{
 			Type:   "remove",
@@ -421,7 +421,7 @@ func TestTransactionFileOperations(t *testing.T) {
 	t.Run("SSTableFileRename", func(t *testing.T) {
 		// Create a rename operation
 		tx := txManager.Begin()
-		
+
 		// Add operation to rename SSTable 5002 to 6000
 		tx.AddOperation(TransactionOperation{
 			Type:   "rename",

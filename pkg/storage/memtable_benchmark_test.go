@@ -105,7 +105,7 @@ func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines
 	// This is more predictable than using b.N which can be very large
 	const totalOps = 10000
 	opsPerGoroutine := totalOps / numGoroutines
-	
+
 	// Generate keys and values - use more descriptive strings to avoid issues
 	keys := make([][]byte, totalOps)
 	values := make([][]byte, totalOps)
@@ -115,7 +115,7 @@ func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines
 	}
 
 	b.ResetTimer()
-	
+
 	// Run the benchmark b.N times
 	for n := 0; n < b.N; n++ {
 		// Reset the memtable for each iteration
@@ -132,7 +132,7 @@ func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines
 				Comparator: DefaultComparator,
 			})
 		}
-		
+
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
@@ -158,7 +158,7 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 	// For concurrent benchmark, we'll use a fixed number of operations
 	const totalOps = 10000
 	opsPerGoroutine := totalOps / numGoroutines
-	
+
 	// Prepare keys and values for consistent usage
 	initialDataSize := 1000
 	initialKeys := make([][]byte, initialDataSize)
@@ -167,17 +167,17 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 		initialKeys[i] = []byte(fmt.Sprintf("initial-key-%d", i))
 		initialValues[i] = []byte(fmt.Sprintf("initial-value-%d", i))
 	}
-	
+
 	// Prepare benchmark operations
 	ops := make([]struct {
 		isRead bool
 		key    []byte
 		value  []byte
 	}, totalOps)
-	
+
 	// Initialize random number generator with fixed seed for reproducibility
 	rng := rand.New(rand.NewSource(42))
-	
+
 	// Generate operations - fixed pattern for all iterations
 	for i := 0; i < len(ops); i++ {
 		ops[i].isRead = rng.Intn(100) < readPercentage
@@ -191,9 +191,9 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 			ops[i].value = []byte(fmt.Sprintf("new-value-%d", i))
 		}
 	}
-	
+
 	b.ResetTimer()
-	
+
 	// Run the benchmark b.N times
 	for n := 0; n < b.N; n++ {
 		// Create and populate a fresh MemTable for each iteration
@@ -211,21 +211,21 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 				Comparator: DefaultComparator,
 			})
 		}
-		
+
 		// Prepopulate with initial data
 		for i := 0; i < initialDataSize; i++ {
 			_ = mt.Put(initialKeys[i], initialValues[i])
 		}
-		
+
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
-		
+
 		for g := 0; g < numGoroutines; g++ {
 			go func(goroutineID int) {
 				defer wg.Done()
 				startIdx := goroutineID * opsPerGoroutine
 				endIdx := startIdx + opsPerGoroutine
-				
+
 				for i := startIdx; i < endIdx; i++ {
 					if i >= len(ops) {
 						break // Safety check
@@ -238,7 +238,7 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 				}
 			}(g)
 		}
-		
+
 		wg.Wait()
 	}
 }

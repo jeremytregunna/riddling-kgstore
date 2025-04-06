@@ -26,10 +26,10 @@ var (
 type RecordType byte
 
 const (
-	RecordPut       RecordType = 1
-	RecordDelete    RecordType = 2
-	RecordTxBegin   RecordType = 3
-	RecordTxCommit  RecordType = 4
+	RecordPut        RecordType = 1
+	RecordDelete     RecordType = 2
+	RecordTxBegin    RecordType = 3
+	RecordTxCommit   RecordType = 4
 	RecordTxRollback RecordType = 5
 )
 
@@ -41,25 +41,25 @@ const (
 
 // WALRecord represents a single record in the WAL
 type WALRecord struct {
-	Type        RecordType
-	Key         []byte
-	Value       []byte
-	Timestamp   int64
-	TxID        uint64  // Transaction ID for transaction-related records
-	Version     uint64  // Version for versioned records
+	Type      RecordType
+	Key       []byte
+	Value     []byte
+	Timestamp int64
+	TxID      uint64 // Transaction ID for transaction-related records
+	Version   uint64 // Version for versioned records
 }
 
 // WAL implements a Write-Ahead Log for durability
 type WAL struct {
-	mu             sync.Mutex
-	file           *os.File
-	writer         *bufio.Writer
-	path           string
-	isOpen         bool
-	syncOnWrite    bool
-	logger         model.Logger
-	activeTxs      map[uint64]bool // Track active transactions by ID
-	nextTxID       uint64          // Next transaction ID to assign
+	mu          sync.Mutex
+	file        *os.File
+	writer      *bufio.Writer
+	path        string
+	isOpen      bool
+	syncOnWrite bool
+	logger      model.Logger
+	activeTxs   map[uint64]bool // Track active transactions by ID
+	nextTxID    uint64          // Next transaction ID to assign
 }
 
 // WALConfig holds configuration options for the WAL
@@ -137,7 +137,7 @@ func (w *WAL) Close() error {
 	if err := w.writer.Flush(); err != nil {
 		return fmt.Errorf("failed to flush WAL: %w", err)
 	}
-	
+
 	// Force sync to ensure all data is written to disk
 	if err := w.file.Sync(); err != nil {
 		w.logger.Warn("Failed to sync WAL during close: %v", err)
@@ -147,7 +147,7 @@ func (w *WAL) Close() error {
 	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("failed to close WAL file: %w", err)
 	}
-	
+
 	// Update the WAL file with the latest transaction ID on next open
 	w.logger.Info("Closed WAL at %s (next transaction ID: %d)", w.path, w.nextTxID)
 	return nil
@@ -377,7 +377,7 @@ func (w *WAL) Sync() error {
 type ReplayOptions struct {
 	// StrictMode causes replay to fail completely if any record is corrupted
 	StrictMode bool
-	
+
 	// AtomicTxOnly ensures that transactions are applied atomically or not at all
 	AtomicTxOnly bool
 }
@@ -410,7 +410,7 @@ func (w *WAL) ReplayWithOptions(memTable *MemTable, options ReplayOptions) error
 	// Log summary information about the replay
 	w.logger.Info("Replayed %d of %d records from WAL (applied: %d, corrupted: %d, skipped txs: %d)",
 		stats.AppliedCount, stats.RecordCount, stats.AppliedCount, stats.CorruptedCount, stats.SkippedTxCount)
-	
+
 	return nil
 }
 
@@ -460,7 +460,7 @@ func (w *WAL) writeHeader() error {
 	if err := binary.Write(w.writer, binary.LittleEndian, WALVersion); err != nil {
 		return err
 	}
-	
+
 	// In version 2+, also write the next transaction ID
 	if err := binary.Write(w.writer, binary.LittleEndian, w.nextTxID); err != nil {
 		return err
@@ -512,7 +512,7 @@ func (w *WAL) verifyHeader() error {
 		if err := binary.Read(w.file, binary.LittleEndian, &nextTxID); err != nil {
 			return err
 		}
-		
+
 		// Only update if the stored ID is higher
 		if nextTxID > w.nextTxID {
 			w.nextTxID = nextTxID
@@ -535,7 +535,7 @@ func (w *WAL) writeRecord(record WALRecord) error {
 	// Calculate total record size
 	totalSize := 1 + // Type
 		8 + // Timestamp
-		8   // TxID (always present now)
+		8 // TxID (always present now)
 
 	// Add key/value sizes for operations that use them
 	if record.Type == RecordPut || record.Type == RecordDelete {
@@ -650,9 +650,9 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 	record.Type = RecordType(recordTypeByte)
 
 	// Validate record type
-	if record.Type != RecordPut && record.Type != RecordDelete && 
-	   record.Type != RecordTxBegin && record.Type != RecordTxCommit && 
-	   record.Type != RecordTxRollback {
+	if record.Type != RecordPut && record.Type != RecordDelete &&
+		record.Type != RecordTxBegin && record.Type != RecordTxCommit &&
+		record.Type != RecordTxRollback {
 		return record, ErrInvalidWALRecord
 	}
 

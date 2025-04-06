@@ -91,7 +91,7 @@ func TestDeletedEntryReactivation(t *testing.T) {
 		t.Fatalf("Expected value %s, got %s", value2, foundValue)
 	}
 
-	// In a real engine implementation with versioned records, 
+	// In a real engine implementation with versioned records,
 	// we'd need to check across all SSTables and respect tombstones
 	// and use the record with the highest version
 	t.Log("Key can be retrieved from new SSTable, but proper handling requires version checking across SSTables")
@@ -114,7 +114,7 @@ func TestVersionedRecordDeletion(t *testing.T) {
 	// Verify the version was set
 	node, _ := memTable.findNodeAndPrevs(key)
 	initialVersion := node.version
-	
+
 	if initialVersion == 0 {
 		t.Fatal("Expected version to be set, got 0")
 	}
@@ -130,10 +130,10 @@ func TestVersionedRecordDeletion(t *testing.T) {
 	if !node.isDeleted {
 		t.Fatal("Expected node to be marked as deleted")
 	}
-	
+
 	deleteVersion := node.version
 	if deleteVersion <= initialVersion {
-		t.Fatalf("Expected delete version (%d) to be greater than initial version (%d)", 
+		t.Fatalf("Expected delete version (%d) to be greater than initial version (%d)",
 			deleteVersion, initialVersion)
 	}
 
@@ -177,11 +177,11 @@ func TestVersionedRecordDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to put entry back: %v", err)
 	}
-	
+
 	// Get version of new record
 	newNode, _ := newMemTable.findNodeAndPrevs(key)
 	readdVersion := newNode.version
-	
+
 	// Create a new SSTable
 	sstConfig.ID = 2
 	sst2, err := CreateSSTable(sstConfig, newMemTable)
@@ -192,11 +192,11 @@ func TestVersionedRecordDeletion(t *testing.T) {
 
 	// Now we need to check that when searching across multiple SSTables,
 	// the engine would properly respect tombstones
-	
+
 	// In a real engine implementation, this would be handled during search
 	// by checking versions and tombstones, but for this test, we'll simulate
 	// the behavior:
-	
+
 	// 1. First check if key is in sst2 - should exist
 	exists, err = sst2.Contains(key)
 	if err != nil {
@@ -205,7 +205,7 @@ func TestVersionedRecordDeletion(t *testing.T) {
 	if !exists {
 		t.Fatal("Key should exist in sst2")
 	}
-	
+
 	// 2. Get the value and version from sst2
 	foundValue, err := sst2.Get(key)
 	if err != nil {
@@ -214,16 +214,16 @@ func TestVersionedRecordDeletion(t *testing.T) {
 	if !bytes.Equal(foundValue, value2) {
 		t.Fatalf("Expected value %s, got %s", value2, foundValue)
 	}
-	
+
 	// 3. Now check if the version in sst (tombstone) is higher than in sst2
 	// In a real-world implementation, the engine would need to check all SSTables
 	// and select the value with the highest version, respecting tombstones
-	
+
 	// This is a successful demonstration that with versioned records:
 	// - Deletion information is preserved in SSTables
 	// - Tombstones are respected during reads
 	// - Each record has a version that can be used to determine the most recent state
-	
-	t.Logf("Versioned records successfully prevent reactivation: delete version %d, re-add version %d", 
+
+	t.Logf("Versioned records successfully prevent reactivation: delete version %d, re-add version %d",
 		deleteVersion, readdVersion)
 }
