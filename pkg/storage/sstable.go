@@ -949,6 +949,8 @@ func DefaultIteratorOptions() IteratorOptions {
 
 // Iterator returns an iterator for the SSTable with default options
 func (sst *SSTable) Iterator() (*SSTableIterator, error) {
+	sst.logger.Debug("Creating iterator for SSTable %d (keyCount: %d, size: %d bytes)", 
+		sst.id, sst.keyCount, sst.dataSize)
 	return sst.IteratorWithOptions(DefaultIteratorOptions())
 }
 

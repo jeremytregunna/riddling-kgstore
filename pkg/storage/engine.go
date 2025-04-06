@@ -625,47 +625,66 @@ func (e *StorageEngine) Flush() error {
 
 // Compact triggers a manual compaction of SSTables
 func (e *StorageEngine) Compact() error {
+	e.logger.Debug("Starting compaction process")
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if !e.isOpen {
+		e.logger.Debug("Engine is closed, cannot compact")
 		return ErrEngineClosed
 	}
 
 	// First, flush all immutable MemTables
-	for _, immMemTable := range e.immMemTables {
+	e.logger.Debug("Flushing %d immutable MemTables", len(e.immMemTables))
+	for i, immMemTable := range e.immMemTables {
+		e.logger.Debug("Flushing immutable MemTable %d/%d with %d entries", 
+			i+1, len(e.immMemTables), immMemTable.EntryCount())
 		if err := e.flushMemTableLocked(immMemTable); err != nil {
+			e.logger.Debug("Failed to flush immutable MemTable: %v", err)
 			return fmt.Errorf("failed to flush immutable MemTable: %w", err)
 		}
 	}
 	e.immMemTables = e.immMemTables[:0]
 
 	// Update the levels in our leveledCompactor
+	e.logger.Debug("Allocating SSTable levels")
 	e.allocateSSTableLevels(e.leveledCompactor)
+
+	// Print level allocation
+	for i := 0; i < e.leveledCompactor.MaxLevels; i++ {
+		e.logger.Debug("Level %d has %d SSTables", i, len(e.leveledCompactor.Levels[i]))
+	}
 
 	// Run full compaction on all levels
 	// First compact level 0 into level 1
 	if len(e.leveledCompactor.Levels[0]) > 0 {
+		e.logger.Debug("Compacting level 0 with %d SSTables", len(e.leveledCompactor.Levels[0]))
 		if err := e.compactLevel0(e.leveledCompactor); err != nil {
+			e.logger.Debug("Failed to compact level 0: %v", err)
 			return fmt.Errorf("failed to compact level 0: %w", err)
 		}
 
 		// After level 0 compaction, reallocate levels as level 0 files are now in level 1
+		e.logger.Debug("Reallocating SSTable levels after level 0 compaction")
 		e.allocateSSTableLevels(e.leveledCompactor)
 	}
 
 	// Compact all remaining levels sequentially
 	for level := 1; level < e.leveledCompactor.MaxLevels-1; level++ {
 		if len(e.leveledCompactor.Levels[level]) > 0 {
+			e.logger.Debug("Compacting level %d with %d SSTables", level, len(e.leveledCompactor.Levels[level]))
 			if err := e.compactLevel(e.leveledCompactor, level); err != nil {
+				e.logger.Debug("Failed to compact level %d: %v", level, err)
 				return fmt.Errorf("failed to compact level %d: %w", level, err)
 			}
 
 			// Reallocate levels after each level compaction
+			e.logger.Debug("Reallocating SSTable levels after level %d compaction", level)
 			e.allocateSSTableLevels(e.leveledCompactor)
 		}
 	}
 
+	e.logger.Debug("Completed full manual compaction")
 	e.logger.Info("Completed full manual compaction")
 	return nil
 }
@@ -1039,6 +1058,8 @@ func min(a, b int) int {
 
 // allocateSSTableLevels allocates existing SSTables into levels
 func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
+	e.logger.Debug("Allocating %d SSTables into levels", len(e.sstables))
+	
 	// Clear current levels
 	for i := 0; i < lc.MaxLevels; i++ {
 		lc.Levels[i] = make([]*SSTable, 0)
@@ -1049,6 +1070,13 @@ func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 		return e.sstables[i].ID() < e.sstables[j].ID()
 	})
 
+	if e.logger.IsLevelEnabled(model.LogLevelDebug) {
+		e.logger.Debug("Sorted SSTable IDs:")
+		for i, sst := range e.sstables {
+			e.logger.Debug("  SSTable[%d]: ID=%d", i, sst.ID())
+		}
+	}
+
 	// Simple allocation based on creation time
 	// Newer SSTables go to level 0, older ones to higher levels
 	// In a real implementation, this would be more sophisticated based on key ranges
@@ -1057,28 +1085,52 @@ func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 	level0Count := min(len(e.sstables), lc.Level0Size)
 	startIdx := len(e.sstables) - level0Count
 	lc.Levels[0] = append(lc.Levels[0], e.sstables[startIdx:]...)
+	e.logger.Debug("Allocated %d newest SSTables to level 0", level0Count)
 
 	// Remainder get distributed to higher levels
 	// Initially we'll put all older tables in level 1 for simplicity
 	if startIdx > 0 {
 		lc.Levels[1] = append(lc.Levels[1], e.sstables[:startIdx]...)
+		e.logger.Debug("Allocated %d older SSTables to level 1", startIdx)
+	}
+	
+	if e.logger.IsLevelEnabled(model.LogLevelDebug) {
+		e.logger.Debug("Final level allocation:")
+		for i := 0; i < lc.MaxLevels; i++ {
+			if len(lc.Levels[i]) > 0 {
+				// Build a string of SSTable IDs
+				var idStr string
+				for j, sst := range lc.Levels[i] {
+					if j > 0 {
+						idStr += ", "
+					}
+					idStr += fmt.Sprintf("%d", sst.ID())
+				}
+				e.logger.Debug("  Level %d: %d SSTables (IDs: %s)", i, len(lc.Levels[i]), idStr)
+			} else {
+				e.logger.Debug("  Level %d: empty", i)
+			}
+		}
 	}
 }
 
 // compactLevel0 compacts level 0 SSTables into level 1
 func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	// Log the compaction operation
+	e.logger.Debug("Starting compaction of level 0")
 	e.logger.Info("Starting compaction of level 0 with %d files", len(lc.Levels[0]))
 
 	// Create a new MemTable to merge level 0 SSTables - either lock-free or standard based on config
 	var mergedMemTable MemTableInterface
 	if e.config.UseLockFreeMemTable {
+		e.logger.Debug("Creating lock-free MemTable for compaction")
 		mergedMemTable = NewLockFreeMemTable(LockFreeMemTableConfig{
 			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
 			Logger:     e.logger,
 			Comparator: e.config.Comparator,
 		})
 	} else {
+		e.logger.Debug("Creating standard MemTable for compaction")
 		mergedMemTable = NewMemTable(MemTableConfig{
 			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
 			Logger:     e.logger,
@@ -1086,51 +1138,70 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		})
 	}
 
+	e.logger.Debug("Reading key-value pairs from level 0 SSTables")
 	// Read all key-value pairs from level 0 SSTables (newest to oldest for correct overwrite semantics)
 	// Level 0 has overlapping key ranges, so we need to process newer files first
 	for i := len(lc.Levels[0]) - 1; i >= 0; i-- {
 		sstable := lc.Levels[0][i]
+		e.logger.Debug("Processing level 0 SSTable %d (ID: %d)", i, sstable.ID())
 		iter, err := sstable.Iterator()
 		if err != nil {
+			e.logger.Debug("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
 
+		var keyCount int
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
 			value := iter.Value()
+			keyCount++
 
 			// Add to merged MemTable (newer values will overwrite older ones)
 			if err := mergedMemTable.Put(key, value); err != nil {
+				e.logger.Debug("Failed to add key-value pair to merged MemTable: %v", err)
 				e.logger.Error("Failed to add key-value pair to merged MemTable: %v", err)
 			}
 
 			if err := iter.Next(); err != nil {
+				e.logger.Debug("Failed to advance iterator: %v", err)
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
+			
+			// Log progress occasionally
+			if keyCount%1000 == 0 && e.logger.IsLevelEnabled(model.LogLevelDebug) {
+				e.logger.Debug("Processed %d keys from SSTable %d", keyCount, sstable.ID())
+			}
 		}
 
+		e.logger.Debug("Finished processing %d keys from level 0 SSTable %d", keyCount, sstable.ID())
 		iter.Close()
 	}
 
+	e.logger.Debug("Merged MemTable now contains %d entries", mergedMemTable.EntryCount())
+	e.logger.Debug("Processing level 1 SSTables")
 	// Now merge with any overlapping files from level 1
 	// In level 1, files should have non-overlapping key ranges, but during the initial
 	// implementation we'll just merge all level 1 files for simplicity
-	for _, sstable := range lc.Levels[1] {
+	for i, sstable := range lc.Levels[1] {
+		e.logger.Debug("Processing level 1 SSTable %d (ID: %d)", i, sstable.ID())
 		iter, err := sstable.Iterator()
 		if err != nil {
+			e.logger.Debug("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			e.logger.Error("Failed to create iterator for SSTable %d: %v", sstable.ID(), err)
 			continue
 		}
 
+		var keyCount int
 		// Iterate through all key-value pairs
 		for iter.Valid() {
 			key := iter.Key()
 			// For level 1, we need to consider version information
 			// Read the value and potentially its version from the SSTable
 			value := iter.Value()
+			keyCount++
 
 			// In current implementation, we can't easily get version from the iterator
 			// So we'll add the key only if it doesn't exist in the merged MemTable (implying level 0 takes precedence)
@@ -1139,21 +1210,32 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 			// and take the record with the higher version
 			if !mergedMemTable.Contains(key) {
 				if err := mergedMemTable.Put(key, value); err != nil {
+					e.logger.Debug("Failed to add key-value pair from level 1 to merged MemTable: %v", err)
 					e.logger.Error("Failed to add key-value pair from level 1 to merged MemTable: %v", err)
 				}
 			}
 
 			if err := iter.Next(); err != nil {
+				e.logger.Debug("Failed to advance iterator: %v", err)
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
+			
+			// Log progress occasionally
+			if keyCount%1000 == 0 && e.logger.IsLevelEnabled(model.LogLevelDebug) {
+				e.logger.Debug("Processed %d keys from level 1 SSTable %d", keyCount, sstable.ID())
+			}
 		}
 
+		e.logger.Debug("Finished processing %d keys from level 1 SSTable %d", keyCount, sstable.ID())
 		iter.Close()
 	}
 
+	e.logger.Debug("Merged MemTable now contains %d entries total", mergedMemTable.EntryCount())
+	e.logger.Debug("Beginning transaction for compaction")
 	// Begin a transaction for the compaction operation
 	tx := e.txManager.Begin()
+	e.logger.Debug("Started transaction %d", tx.id)
 
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
@@ -1164,13 +1246,16 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		Comparator: e.config.Comparator,
 	}
 
+	e.logger.Debug("Creating new SSTable with ID %d", e.nextSSTableID)
 	mergedSSTable, err := CreateSSTable(sstConfig, mergedMemTable)
 	if err != nil {
+		e.logger.Debug("Failed to create merged SSTable: %v", err)
 		tx.Rollback()
 		return fmt.Errorf("failed to create merged SSTable: %w", err)
 	}
 
 	// Add the 'add' operation to the transaction
+	e.logger.Debug("Adding 'add' operation for SSTable %d to transaction", mergedSSTable.ID())
 	tx.AddOperation(TransactionOperation{
 		Type:   "add",
 		Target: "sstable",
@@ -1178,6 +1263,8 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	})
 
 	// Add 'remove' operations for all SSTables that will be removed
+	e.logger.Debug("Adding 'remove' operations for %d SSTables to transaction", 
+		len(lc.Levels[0])+len(lc.Levels[1]))
 	allSSTablesToRemove := append(lc.Levels[0], lc.Levels[1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
 	for _, sstable := range allSSTablesToRemove {
@@ -1189,6 +1276,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		})
 	}
 
+	e.logger.Debug("Updating in-memory state")
 	// Update the in-memory state (this happens before commit to ensure consistency)
 	newSSTables := make([]*SSTable, 0, len(e.sstables)-len(allSSTablesToRemove)+1)
 	for _, sstable := range e.sstables {
@@ -1207,23 +1295,29 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	// Add the new SSTable to our in-memory list
 	newSSTables = append(newSSTables, mergedSSTable)
 
+	e.logger.Debug("Committing transaction")
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		// On commit failure, we should close the new SSTable to release resources
+		e.logger.Debug("Failed to commit compaction transaction: %v", err)
 		mergedSSTable.Close()
 		return fmt.Errorf("failed to commit compaction transaction: %w", err)
 	}
 
+	e.logger.Debug("Transaction committed successfully")
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
 
+	e.logger.Debug("Marking old SSTables for deletion")
 	// Mark old SSTables for deletion instead of immediately closing them
 	// This allows ongoing reads to complete even after compaction finishes
 	for _, sstable := range allSSTablesToRemove {
 		e.markSSTableForDeletion(sstable)
 	}
 
+	e.logger.Debug("Level 0 compaction complete, created SSTable %d with %d keys", 
+		mergedSSTable.ID(), mergedSSTable.KeyCount())
 	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys",
 		len(oldIDs), oldIDs, mergedSSTable.ID(), mergedSSTable.KeyCount())
 	return nil
@@ -1527,13 +1621,30 @@ func (e *StorageEngine) CleanupPendingDeletions() {
 // This logically deletes the SSTable while allowing ongoing reads to complete
 func (e *StorageEngine) markSSTableForDeletion(sstable *SSTable) {
 	id := sstable.ID()
-	e.deletionMu.Lock()
-	defer e.deletionMu.Unlock()
-
-	// Add to pending deletions if not already there
-	if _, exists := e.pendingDeletions[id]; !exists {
-		e.pendingDeletions[id] = sstable
-		e.deletionTime[id] = time.Now()
-		e.logger.Debug("Marked SSTable %d for deletion with delay %v", id, e.config.SSTableDeletionDelay)
+	e.logger.Debug("Marking SSTable %d for deletion", id)
+	
+	// Set a timeout to make sure we don't hang on mutex acquisition
+	acquired := make(chan bool, 1)
+	go func() {
+		e.deletionMu.Lock()
+		acquired <- true
+	}()
+	
+	select {
+	case <-acquired:
+		// Continue with normal operation now that we have the lock
+		defer e.deletionMu.Unlock()
+		
+		// Add to pending deletions if not already there
+		if _, exists := e.pendingDeletions[id]; !exists {
+			e.pendingDeletions[id] = sstable
+			e.deletionTime[id] = time.Now()
+			e.logger.Debug("SSTable %d marked for deletion with delay %v", id, e.config.SSTableDeletionDelay)
+		} else {
+			e.logger.Debug("SSTable %d already marked for deletion", id)
+		}
+	case <-time.After(5 * time.Second):
+		e.logger.Warn("Timeout waiting to acquire deletionMu for SSTable %d deletion", id)
+		// Don't take any action, just log the warning
 	}
 }

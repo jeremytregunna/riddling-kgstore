@@ -11,6 +11,7 @@ type Logger interface {
 	Info(format string, args ...interface{})
 	Warn(format string, args ...interface{})
 	Error(format string, args ...interface{})
+	IsLevelEnabled(level LogLevel) bool
 }
 
 // LogLevel represents the severity level of a log message
@@ -65,6 +66,11 @@ func (l *DefaultLogger) Error(format string, args ...interface{}) {
 	}
 }
 
+// IsLevelEnabled returns true if the given log level is enabled
+func (l *DefaultLogger) IsLevelEnabled(level LogLevel) bool {
+	return l.level <= level
+}
+
 // NoOpLogger is a logger implementation that discards all log messages
 type NoOpLogger struct{}
 
@@ -84,6 +90,11 @@ func (l *NoOpLogger) Warn(format string, args ...interface{}) {}
 
 // Error discards the error message
 func (l *NoOpLogger) Error(format string, args ...interface{}) {}
+
+// IsLevelEnabled always returns false for NoOpLogger
+func (l *NoOpLogger) IsLevelEnabled(level LogLevel) bool {
+	return false
+}
 
 var (
 	// DefaultLoggerInstance is the default logger used by the package

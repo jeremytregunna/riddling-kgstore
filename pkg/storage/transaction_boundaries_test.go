@@ -32,6 +32,11 @@ func (l *testLogger) Error(format string, args ...interface{}) {
 	l.t.Logf("[ERROR] "+format, args...)
 }
 
+// IsLevelEnabled implements the model.Logger interface
+func (l *testLogger) IsLevelEnabled(level model.LogLevel) bool {
+	return true // Always enabled for tests
+}
+
 // TestWALTransactionBoundaries tests the WAL transaction boundaries functionality
 func TestWALTransactionBoundaries(t *testing.T) {
 	// Create a temporary directory for WAL files

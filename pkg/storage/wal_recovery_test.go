@@ -32,6 +32,11 @@ func (l *warningCountLogger) Error(format string, args ...interface{}) {
 	l.t.Logf("[ERROR] "+format, args...)
 }
 
+// IsLevelEnabled implements the model.Logger interface
+func (l *warningCountLogger) IsLevelEnabled(level model.LogLevel) bool {
+	return true // Always enabled for tests
+}
+
 // TestWALCorruptedRecovery tests how the WAL handles recovery when encountering corrupted records
 func TestWALCorruptedRecovery(t *testing.T) {
 	// Create a temporary directory for WAL files
