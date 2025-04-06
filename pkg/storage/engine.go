@@ -34,6 +34,7 @@ type StorageEngine struct {
 	leveledCompactor    *LeveledCompaction  // Manages the leveled compaction strategy
 	txManager           *TransactionManager // Transaction manager for atomic operations
 	useLSMNodeLabelIndex bool               // Whether to use LSM-tree based node label index
+	usePropertyIndex    bool                // Whether to use specialized property index
 
 	// Two-phase deletion mechanism for safe SSTable removal
 	deletionMu       sync.Mutex           // Mutex for deletion operations (separate from main engine lock)
@@ -70,6 +71,9 @@ type EngineConfig struct {
 
 	// Use LSM-tree based node label index for better performance
 	UseLSMNodeLabelIndex bool
+	
+	// Use specialized SSTable format for property indexing
+	UsePropertyIndex bool
 
 	// Time to wait before physically deleting SSTables after they're removed from the index
 	// This allows ongoing read operations to complete when SSTables are being removed during compaction
@@ -88,6 +92,7 @@ func DefaultEngineConfig() EngineConfig {
 		BloomFilterFPR:       0.01,             // 1% false positive rate
 		UseLockFreeMemTable:  false,            // Default to original MemTable for backward compatibility
 		UseLSMNodeLabelIndex: true,             // Default to using LSM-tree based node label index
+		UsePropertyIndex:     true,             // Default to using specialized property index
 		SSTableDeletionDelay: 30 * time.Second, // Default 30-second delay for SSTable deletion
 	}
 }
@@ -177,6 +182,7 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		deletionTime:     make(map[uint64]time.Time),
 		deletionExit:     make(chan struct{}),
 		useLSMNodeLabelIndex: config.UseLSMNodeLabelIndex,
+		usePropertyIndex: config.UsePropertyIndex,
 	}
 
 	// Set up the condition variable for compaction

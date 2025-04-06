@@ -30,6 +30,9 @@ const (
 
 	// Primary index for Edge ID -> Edge data
 	IndexTypeEdgePrimary IndexType = 4
+	
+	// Secondary index for Property -> List of Node/Edge IDs
+	IndexTypePropertyValue IndexType = 5
 )
 
 // Index is a generic interface for different index types
