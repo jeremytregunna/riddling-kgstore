@@ -147,12 +147,12 @@ type BaseIndex struct {
 }
 
 // NewBaseIndex creates a new base index with common functionality
-func NewBaseIndex(storage *StorageEngine, logger model.Logger, prefix []byte, indexType IndexType) BaseIndex {
+func NewBaseIndex(storage *StorageEngine, logger model.Logger, prefix []byte, indexType IndexType) *BaseIndex {
 	if logger == nil {
 		logger = model.DefaultLoggerInstance
 	}
 
-	return BaseIndex{
+	return &BaseIndex{
 		storage:   storage,
 		isOpen:    true,
 		logger:    logger,
@@ -221,7 +221,7 @@ func DeserializeIDs(data []byte) ([][]byte, error) {
 
 // nodeIndex implements a primary index for Node ID -> Node data
 type nodeIndex struct {
-	BaseIndex
+	*BaseIndex
 }
 
 // NewNodeIndex creates a new primary index for nodes
@@ -341,7 +341,7 @@ func (idx *nodeIndex) GetType() IndexType {
 
 // nodeLabelIndex implements a secondary index for Node Label -> List of Node IDs
 type nodeLabelIndex struct {
-	BaseIndex
+	*BaseIndex
 }
 
 // NewNodeLabelIndex creates a new secondary index for node labels
@@ -570,7 +570,7 @@ func (idx *nodeLabelIndex) getNodeIDsLocked(key []byte) ([][]byte, error) {
 
 // edgeLabelIndex implements a secondary index for Edge Label -> List of Edge IDs
 type edgeLabelIndex struct {
-	BaseIndex
+	*BaseIndex
 }
 
 // NewEdgeLabelIndex creates a new secondary index for edge labels

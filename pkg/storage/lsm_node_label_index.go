@@ -11,7 +11,7 @@ import (
 // lsmNodeLabelIndex implements a secondary index for Node Label -> List of Node IDs
 // using an LSM-tree based structure for better performance
 type lsmNodeLabelIndex struct {
-	BaseIndex
+	*BaseIndex
 	cache *IndexCache
 }
 
@@ -20,7 +20,7 @@ func NewLSMNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, e
 	base := NewBaseIndex(storage, logger, []byte("nl:"), IndexTypeNodeLabel)
 	
 	index := &lsmNodeLabelIndex{
-		BaseIndex: base,
+		BaseIndex: base, 
 		cache:     NewIndexCache(1000), // Cache up to 1000 labels
 	}
 

@@ -8,7 +8,7 @@ import (
 
 // edgeIndex implements a primary index for Edge ID -> Edge data
 type edgeIndex struct {
-	BaseIndex
+	*BaseIndex
 }
 
 // NewEdgeIndex creates a new primary index for edges

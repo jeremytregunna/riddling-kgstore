@@ -32,7 +32,7 @@ const (
 // propertyIndex implements a specialized SSTable format for indexing property values
 // It follows an LSM-tree based structure similar to the node label index
 type propertyIndex struct {
-	BaseIndex
+	*BaseIndex
 	entityType     PropertyIndexType
 	cache          *IndexCache
 	fullTextSearch bool // Whether to enable full-text search capabilities

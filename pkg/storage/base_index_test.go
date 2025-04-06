@@ -106,7 +106,7 @@ func TestBaseIndex(t *testing.T) {
 	indexType := IndexType(42)
 
 	// Create a base index
-	baseIndex := NewBaseIndex(storage, logger, prefix, indexType)
+	baseIndex := *NewBaseIndex(storage, logger, prefix, indexType)
 
 	// Test MakeKey
 	key := []byte("testkey")
@@ -145,7 +145,7 @@ func TestBaseIndex(t *testing.T) {
 
 // testIndex implements Index for testing BaseIndex functionality
 type testIndex struct {
-	BaseIndex
+	*BaseIndex
 }
 
 func (idx *testIndex) Put(key, value []byte) error {
