@@ -27,13 +27,13 @@ type Query struct {
 
 // Parameter keys
 const (
-	ParamLabel        = "label"
-	ParamNodeID       = "nodeId"
-	ParamDirection    = "direction"
-	ParamMaxHops      = "maxHops"
-	ParamSourceID     = "sourceId"
-	ParamTargetID     = "targetId"
-	ParamPropertyName = "propertyName"
+	ParamLabel         = "label"
+	ParamNodeID        = "nodeId"
+	ParamDirection     = "direction"
+	ParamMaxHops       = "maxHops"
+	ParamSourceID      = "sourceId"
+	ParamTargetID      = "targetId"
+	ParamPropertyName  = "propertyName"
 	ParamPropertyValue = "propertyValue"
 )
 
@@ -84,9 +84,9 @@ func Parse(queryStr string) (*Query, error) {
 
 	// Validate query type
 	switch queryType {
-	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel, 
-	     QueryTypeFindNodesByProperty, QueryTypeFindEdgesByProperty,
-	     QueryTypeFindNeighbors, QueryTypeFindPath:
+	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel,
+		QueryTypeFindNodesByProperty, QueryTypeFindEdgesByProperty,
+		QueryTypeFindNeighbors, QueryTypeFindPath:
 		// Valid query type
 	default:
 		return nil, fmt.Errorf("%w: unknown query type: %s", ErrInvalidQuery, queryType)

@@ -100,7 +100,7 @@ func TestIDSerialization(t *testing.T) {
 func TestBaseIndex(t *testing.T) {
 	storage, cleanup := setupTestStorageEngine(t)
 	defer cleanup()
-	
+
 	logger := model.NewNoOpLogger()
 	prefix := []byte("test:")
 	indexType := IndexType(42)
@@ -200,14 +200,14 @@ func (idx *testIndex) GetType() IndexType {
 func TestIndexImplementation(t *testing.T) {
 	storage, cleanup := setupTestStorageEngine(t)
 	defer cleanup()
-	
+
 	logger := model.NewNoOpLogger()
 	prefix := []byte("test:")
 	indexType := IndexType(42)
 
 	// Create a base index
 	base := NewBaseIndex(storage, logger, prefix, indexType)
-	
+
 	// Create a test index using the base index
 	index := &testIndex{BaseIndex: base}
 
@@ -290,7 +290,7 @@ func TestIndexImplementation(t *testing.T) {
 // Test IndexCache functionality
 func TestIndexCache(t *testing.T) {
 	cache := NewIndexCache(3) // Cache with max size 3
-	
+
 	// Keys and values for testing
 	keys := [][]byte{
 		[]byte("key1"),
@@ -298,19 +298,19 @@ func TestIndexCache(t *testing.T) {
 		[]byte("key3"),
 		[]byte("key4"),
 	}
-	
+
 	values := [][][]byte{
 		{[]byte("value1-1"), []byte("value1-2")},
 		{[]byte("value2-1")},
 		{[]byte("value3-1"), []byte("value3-2"), []byte("value3-3")},
 		{[]byte("value4-1")},
 	}
-	
+
 	// Test Put and Get
 	for i := 0; i < 3; i++ {
 		cache.Put(keys[i], values[i])
 	}
-	
+
 	// Check values were cached correctly
 	for i := 0; i < 3; i++ {
 		cachedValues, found := cache.Get(keys[i])
@@ -318,24 +318,24 @@ func TestIndexCache(t *testing.T) {
 			t.Errorf("Key %s should be in cache", keys[i])
 			continue
 		}
-		
+
 		if len(cachedValues) != len(values[i]) {
-			t.Errorf("Cached values count mismatch for key %s. Expected %d, got %d", 
+			t.Errorf("Cached values count mismatch for key %s. Expected %d, got %d",
 				keys[i], len(values[i]), len(cachedValues))
 			continue
 		}
-		
+
 		for j, val := range values[i] {
 			if !bytes.Equal(cachedValues[j], val) {
-				t.Errorf("Cached value mismatch at key %s, position %d. Expected %s, got %s", 
+				t.Errorf("Cached value mismatch at key %s, position %d. Expected %s, got %s",
 					keys[i], j, val, cachedValues[j])
 			}
 		}
 	}
-	
+
 	// Test eviction when size limit is reached
 	cache.Put(keys[3], values[3])
-	
+
 	// One of the first 3 keys should have been evicted
 	evictionCount := 0
 	for i := 0; i < 3; i++ {
@@ -344,17 +344,17 @@ func TestIndexCache(t *testing.T) {
 			evictionCount++
 		}
 	}
-	
+
 	if evictionCount != 1 {
 		t.Errorf("Expected exactly 1 key to be evicted, but %d were evicted", evictionCount)
 	}
-	
+
 	// The 4th key should be in the cache
 	_, found := cache.Get(keys[3])
 	if !found {
 		t.Errorf("Key %s should be in cache", keys[3])
 	}
-	
+
 	// Test Invalidate
 	for i := 0; i < 4; i++ {
 		if _, found := cache.Get(keys[i]); found {
@@ -364,37 +364,37 @@ func TestIndexCache(t *testing.T) {
 			}
 		}
 	}
-	
+
 	// Test Clear
 	for i := 0; i < 3; i++ {
 		cache.Put(keys[i], values[i])
 	}
-	
+
 	cache.Clear()
-	
+
 	for i := 0; i < 3; i++ {
 		if _, found := cache.Get(keys[i]); found {
 			t.Errorf("Key %s should be cleared", keys[i])
 		}
 	}
-	
+
 	// Test hit and miss count
 	// Create a fresh cache for this specific test
 	hitMissCache := NewIndexCache(2)
-	
+
 	// Put some keys
 	hitMissCache.Put(keys[0], values[0])
 	hitMissCache.Put(keys[1], values[1])
-	
+
 	// Generate exact number of hits
 	hitMissCache.Get(keys[0])
 	hitMissCache.Get(keys[0])
 	hitMissCache.Get(keys[0])
-	
+
 	// Generate exact number of misses
 	hitMissCache.Get(keys[3])
 	hitMissCache.Get(keys[3])
-	
+
 	size, hits, misses := hitMissCache.GetStats()
 	if size != 2 {
 		t.Errorf("Expected cache size 2, got %d", size)

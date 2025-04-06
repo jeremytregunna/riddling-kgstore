@@ -54,14 +54,14 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 		os.RemoveAll(tempDir)
 		t.Fatalf("Failed to create edge label index: %v", err)
 	}
-	
+
 	// Create the property indexes
 	nodeProperties, err := storage.NewNodePropertyIndex(engine, model.DefaultLoggerInstance)
 	if err != nil {
 		os.RemoveAll(tempDir)
 		t.Fatalf("Failed to create node property index: %v", err)
 	}
-	
+
 	edgeProperties, err := storage.NewEdgePropertyIndex(engine, model.DefaultLoggerInstance)
 	if err != nil {
 		os.RemoveAll(tempDir)
@@ -84,7 +84,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		model.NewNode(4, "Company"),
 		model.NewNode(5, "Company"),
 	}
-	
+
 	// Add properties to nodes
 	nodes[0].AddProperty("name", "Alice")
 	nodes[0].AddProperty("age", "30")
@@ -118,18 +118,18 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		if err != nil {
 			t.Fatalf("Failed to add node to index: %v", err)
 		}
-		
-            // Add node properties to the property index
-            for propName, propValue := range node.GetProperties() {
-                // Create key in the format propertyName|propertyValue
-                propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
-                // The entityID (nodeID as string) becomes the value for the property index
-                nodeIDStr := fmt.Sprintf("%d", node.ID)
-                err = nodeProperties.Put(propKey, []byte(nodeIDStr))
-                if err != nil {
-                    t.Fatalf("Failed to add node property to index: %v", err)
-                }
-            }
+
+		// Add node properties to the property index
+		for propName, propValue := range node.GetProperties() {
+			// Create key in the format propertyName|propertyValue
+			propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
+			// The entityID (nodeID as string) becomes the value for the property index
+			nodeIDStr := fmt.Sprintf("%d", node.ID)
+			err = nodeProperties.Put(propKey, []byte(nodeIDStr))
+			if err != nil {
+				t.Fatalf("Failed to add node property to index: %v", err)
+			}
+		}
 	}
 
 	// Add node labels to the label index
@@ -153,10 +153,10 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		model.NewEdge(2, 5, "WORKS_AT"),
 		model.NewEdge(3, 5, "WORKS_AT"),
 	}
-	
+
 	// Add properties to edges
 	edges[0].AddProperty("since", "2018")
-	edges[1].AddProperty("since", "2019") 
+	edges[1].AddProperty("since", "2019")
 	edges[2].AddProperty("since", "2020")
 	edges[3].AddProperty("role", "Developer")
 	edges[3].AddProperty("since", "2015")
@@ -195,17 +195,17 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		if err != nil {
 			t.Fatalf("Failed to add edge to index: %v", err)
 		}
-		
+
 		// Add edge properties to the property index
-            for propName, propValue := range edge.GetProperties() {
-                // Create key in the format propertyName|propertyValue
-                propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
-                // The entityID (edgeID) becomes the value for the property index
-                err = edgeProperties.Put(propKey, []byte(edgeID))
-                if err != nil {
-                    t.Fatalf("Failed to add edge property to index: %v", err)
-                }
-            }
+		for propName, propValue := range edge.GetProperties() {
+			// Create key in the format propertyName|propertyValue
+			propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
+			// The entityID (edgeID) becomes the value for the property index
+			err = edgeProperties.Put(propKey, []byte(edgeID))
+			if err != nil {
+				t.Fatalf("Failed to add edge property to index: %v", err)
+			}
+		}
 	}
 
 	// Add edge labels to the label index
@@ -528,13 +528,13 @@ func TestExecutor_PropertyIndexingDebug(t *testing.T) {
 
 	// Add a test node with a property directly to the property index
 	nodeProperties.Put([]byte("name|Alice"), []byte("1"))
-	
+
 	// Verify the property index contains the data
 	results, err := nodeProperties.GetAll([]byte("name|Alice"))
 	if err != nil {
 		t.Fatalf("Error retrieving property from index: %v", err)
 	}
-	
+
 	t.Logf("Property index has %d results for name|Alice", len(results))
 	for i, res := range results {
 		t.Logf("Result %d: %s", i, string(res))
@@ -626,7 +626,7 @@ func TestExecutor_PropertyQueries(t *testing.T) {
 			query: &Query{
 				Type: QueryTypeFindEdgesByProperty,
 				Parameters: map[string]string{
-					ParamPropertyName:  "since", 
+					ParamPropertyName:  "since",
 					ParamPropertyValue: "2018",
 				},
 			},

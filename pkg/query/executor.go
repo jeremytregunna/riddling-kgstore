@@ -113,7 +113,7 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 	key := []byte(label)
 	var nodeIDsBytes [][]byte
 	var err error
-	
+
 	// Use LSM-based node label index if available
 	if e.NodeLabels.GetType() == storage.IndexTypeNodeLabel {
 		// Get all node IDs for this label
@@ -121,7 +121,7 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
 		}
-		
+
 		// If no nodes found with this label
 		if err == storage.ErrKeyNotFound || len(nodeIDsBytes) == 0 {
 			return &Result{Nodes: []model.Node{}}, nil
@@ -136,14 +136,14 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 			}
 			return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
 		}
-		
+
 		// Deserialize node IDs using original format
 		var nodeIDs []uint64
 		err = model.Deserialize(singleIDBytes, &nodeIDs)
 		if err != nil {
 			return nil, fmt.Errorf("error deserializing node IDs: %w", err)
 		}
-		
+
 		// Convert to byte arrays for consistent processing
 		nodeIDsBytes = make([][]byte, len(nodeIDs))
 		for i, id := range nodeIDs {
@@ -161,7 +161,7 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 			// Skip invalid IDs
 			continue
 		}
-		
+
 		key := []byte(fmt.Sprintf("node:%d", id))
 		nodeBytes, err := e.NodeIndex.Get(key)
 		if err != nil {
@@ -191,13 +191,13 @@ func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 	key := []byte(label)
 	var edgeIDsBytes [][]byte
 	var err error
-	
+
 	// Try to get all edge IDs from the index
 	edgeIDsBytes, err = e.EdgeLabels.GetAll(key)
 	if err != nil && err != storage.ErrKeyNotFound {
 		return nil, fmt.Errorf("error getting edges for label %s: %w", label, err)
 	}
-	
+
 	// If no edges found with this label or we need to use old format
 	if err == storage.ErrKeyNotFound || len(edgeIDsBytes) == 0 {
 		// Fallback to legacy format if needed
@@ -209,14 +209,14 @@ func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 			}
 			return nil, fmt.Errorf("error getting edges for label %s: %w", label, err)
 		}
-		
+
 		// Deserialize edge IDs using original format
 		var edgeIDs []string
 		err = model.Deserialize(singleIDBytes, &edgeIDs)
 		if err != nil {
 			return nil, fmt.Errorf("error deserializing edge IDs: %w", err)
 		}
-		
+
 		// Convert to byte arrays for consistent processing
 		edgeIDsBytes = make([][]byte, len(edgeIDs))
 		for i, id := range edgeIDs {
@@ -253,7 +253,7 @@ func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 func (e *Executor) executeNodesByProperty(query *Query) (*Result, error) {
 	propertyName := query.Parameters[ParamPropertyName]
 	propertyValue := query.Parameters[ParamPropertyValue]
-	
+
 	// Check if we have the specialized property index
 	if e.NodeProperties == nil {
 		return nil, fmt.Errorf("node property index not available")
@@ -268,7 +268,7 @@ func (e *Executor) executeNodesByProperty(query *Query) (*Result, error) {
 	//
 	// Current implementation for testing purposes:
 	result := &Result{Nodes: []model.Node{}}
-	
+
 	// Get all nodes by scanning through them directly
 	for i := uint64(1); i <= 10; i++ { // Check first 10 node IDs as a simple approach
 		key := []byte(fmt.Sprintf("node:%d", i))
@@ -285,7 +285,7 @@ func (e *Executor) executeNodesByProperty(query *Query) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error deserializing node %d: %w", i, err)
 		}
-		
+
 		// Check if this node has the matching property
 		if propValue, ok := node.Properties[propertyName]; ok && propValue == propertyValue {
 			result.Nodes = append(result.Nodes, node)
@@ -299,12 +299,12 @@ func (e *Executor) executeNodesByProperty(query *Query) (*Result, error) {
 func (e *Executor) executeEdgesByProperty(query *Query) (*Result, error) {
 	propertyName := query.Parameters[ParamPropertyName]
 	propertyValue := query.Parameters[ParamPropertyValue]
-	
+
 	// Check if we have the specialized property index
 	if e.EdgeProperties == nil {
 		return nil, fmt.Errorf("edge property index not available")
 	}
-	
+
 	// TODO: Optimize by properly using the property index
 	// Currently, this is a fallback approach that scans edges directly
 	// In a future update, this should be enhanced to:
@@ -314,12 +314,12 @@ func (e *Executor) executeEdgesByProperty(query *Query) (*Result, error) {
 	//
 	// Current implementation for testing purposes:
 	result := &Result{Edges: []model.Edge{}}
-	
+
 	// Get the test edges we know about (based on our test data setup)
 	testEdgeIDs := []string{
 		"1-2", "1-3", "2-3", "1-4", "2-5", "3-5",
 	}
-	
+
 	// Check each edge
 	for _, edgeID := range testEdgeIDs {
 		key := []byte(fmt.Sprintf("edge:%s", edgeID))
@@ -336,13 +336,13 @@ func (e *Executor) executeEdgesByProperty(query *Query) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error deserializing edge %s: %w", edgeID, err)
 		}
-		
+
 		// Check if this edge has the matching property
 		if propValue, ok := edge.GetProperty(propertyName); ok && propValue == propertyValue {
 			result.Edges = append(result.Edges, edge)
 		}
 	}
-	
+
 	return result, nil
 }
 

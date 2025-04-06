@@ -18,9 +18,9 @@ type lsmNodeLabelIndex struct {
 // NewLSMNodeLabelIndex creates a new LSM-tree based secondary index for node labels
 func NewLSMNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
 	base := NewBaseIndex(storage, logger, []byte("nl:"), IndexTypeNodeLabel)
-	
+
 	index := &lsmNodeLabelIndex{
-		BaseIndex: base, 
+		BaseIndex: base,
 		cache:     NewIndexCache(1000), // Cache up to 1000 labels
 	}
 
@@ -57,7 +57,7 @@ func (idx *lsmNodeLabelIndex) extractNodeID(key []byte) ([]byte, error) {
 	if lastSep == -1 || lastSep+1 >= len(key) {
 		return nil, errors.New("invalid key format for node label index")
 	}
-	
+
 	// Return the part after the last ':'
 	return key[lastSep+1:], nil
 }
@@ -76,7 +76,7 @@ func (idx *lsmNodeLabelIndex) Put(label, nodeID []byte) error {
 
 	// Store a simple marker value (1 byte) - the actual data is in the key
 	marker := []byte{1}
-	
+
 	// Store in the underlying storage
 	err := idx.storage.Put(key, marker)
 	if err != nil {
@@ -108,14 +108,14 @@ func (idx *lsmNodeLabelIndex) Get(label []byte) ([]byte, error) {
 func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error) {
 	// Implementation using prefix-based iteration through the underlying storage
 	result := make([][]byte, 0)
-	
+
 	// First check the current MemTable
 	memTableNodeIDs, err := idx.scanMemTableWithPrefix(idx.storage.memTable, prefix)
 	if err != nil {
 		return nil, err
 	}
 	result = append(result, memTableNodeIDs...)
-	
+
 	// Then check immutable MemTables
 	for i := len(idx.storage.immMemTables) - 1; i >= 0; i-- {
 		memTableNodeIDs, err := idx.scanMemTableWithPrefix(idx.storage.immMemTables[i], prefix)
@@ -124,7 +124,7 @@ func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error
 		}
 		result = append(result, memTableNodeIDs...)
 	}
-	
+
 	// Finally check SSTables (newest to oldest)
 	for i := len(idx.storage.sstables) - 1; i >= 0; i-- {
 		sstableNodeIDs, err := idx.scanSSTableWithPrefix(idx.storage.sstables[i], prefix)
@@ -133,7 +133,7 @@ func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error
 		}
 		result = append(result, sstableNodeIDs...)
 	}
-	
+
 	// Remove duplicates (nodeIDs might appear in multiple layers)
 	return idx.deduplicateNodeIDs(result), nil
 }
@@ -142,14 +142,14 @@ func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error
 func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable MemTableInterface, prefix []byte) ([][]byte, error) {
 	// This implementation assumes we can iterate through the MemTable
 	result := make([][]byte, 0)
-	
+
 	// For MemTable, use the GetEntries method and filter by prefix
 	entries := memTable.GetEntries()
-	
+
 	// Process entries in pairs (key, value)
 	for i := 0; i < len(entries); i += 2 {
 		key := entries[i]
-		
+
 		// Check if this key has our prefix
 		if bytes.HasPrefix(key, prefix) {
 			// Extract the node ID from the key
@@ -157,7 +157,7 @@ func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable MemTableInterface,
 			if err != nil {
 				continue // Skip invalid keys
 			}
-			
+
 			// Get the value to check if it's a tombstone
 			value := entries[i+1]
 			if len(value) > 0 && value[0] == 1 { // Not a tombstone
@@ -165,51 +165,51 @@ func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable MemTableInterface,
 			}
 		}
 	}
-	
+
 	return result, nil
 }
 
 // scanSSTableWithPrefix scans an SSTable for keys with a specific prefix
 func (idx *lsmNodeLabelIndex) scanSSTableWithPrefix(sstable *SSTable, prefix []byte) ([][]byte, error) {
 	result := make([][]byte, 0)
-	
+
 	// Create an iterator for the SSTable
 	opts := DefaultIteratorOptions()
 	opts.IncludeTombstones = false
-	
+
 	iter, err := sstable.IteratorWithOptions(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSTable iterator: %w", err)
 	}
 	defer iter.Close()
-	
+
 	// Position at the first key with our prefix
 	err = iter.Seek(prefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to seek to prefix: %w", err)
 	}
-	
+
 	// Iterate through matching keys
 	for iter.Valid() {
 		key := iter.Key()
-		
+
 		// Check if we've moved past keys with our prefix
 		if !bytes.HasPrefix(key, prefix) {
 			break
 		}
-		
+
 		// Extract the node ID from the key
 		nodeID, err := idx.extractNodeID(key)
 		if err == nil {
 			result = append(result, nodeID)
 		}
-		
+
 		// Move to next entry
 		if err := iter.Next(); err != nil {
 			break
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -218,11 +218,11 @@ func (idx *lsmNodeLabelIndex) deduplicateNodeIDs(nodeIDs [][]byte) [][]byte {
 	if len(nodeIDs) <= 1 {
 		return nodeIDs
 	}
-	
+
 	// Use a map for deduplication
 	unique := make(map[string]struct{})
 	result := make([][]byte, 0, len(nodeIDs))
-	
+
 	for _, id := range nodeIDs {
 		idStr := string(id)
 		if _, exists := unique[idStr]; !exists {
@@ -230,7 +230,7 @@ func (idx *lsmNodeLabelIndex) deduplicateNodeIDs(nodeIDs [][]byte) [][]byte {
 			result = append(result, id)
 		}
 	}
-	
+
 	return result
 }
 
@@ -250,13 +250,13 @@ func (idx *lsmNodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 
 	// Create a prefix for range scan
 	prefix := idx.makeLabelPrefix(label)
-	
+
 	// Scan for all keys with this prefix
 	nodeIDs, err := idx.scanKeysWithPrefix(prefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan for node IDs: %w", err)
 	}
-	
+
 	// Cache the results
 	idx.cache.Put(label, nodeIDs)
 
@@ -278,7 +278,7 @@ func (idx *lsmNodeLabelIndex) Delete(label []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to scan for node IDs: %w", err)
 	}
-	
+
 	// Delete each node ID entry
 	for _, nodeID := range nodeIDs {
 		key := idx.makeCompositeKey(label, nodeID)
@@ -306,7 +306,7 @@ func (idx *lsmNodeLabelIndex) DeleteValue(label, nodeID []byte) error {
 
 	// Create the composite key
 	key := idx.makeCompositeKey(label, nodeID)
-	
+
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
 	if err != nil {
@@ -336,14 +336,14 @@ func (idx *lsmNodeLabelIndex) Contains(label []byte) (bool, error) {
 
 	// Create a prefix for range scan
 	prefix := idx.makeLabelPrefix(label)
-	
+
 	// We just need to find one key with this prefix
 	// First check the current MemTable
 	nodeIDs, err := idx.scanMemTableWithPrefix(idx.storage.memTable, prefix)
 	if err == nil && len(nodeIDs) > 0 {
 		return true, nil
 	}
-	
+
 	// Then check immutable MemTables
 	for i := len(idx.storage.immMemTables) - 1; i >= 0; i-- {
 		nodeIDs, err := idx.scanMemTableWithPrefix(idx.storage.immMemTables[i], prefix)
@@ -351,17 +351,17 @@ func (idx *lsmNodeLabelIndex) Contains(label []byte) (bool, error) {
 			return true, nil
 		}
 	}
-	
+
 	// Finally check SSTables (newest to oldest)
 	for i := len(idx.storage.sstables) - 1; i >= 0; i-- {
 		sstable := idx.storage.sstables[i]
-		
+
 		// Create an iterator for the SSTable
 		iter, err := sstable.Iterator()
 		if err != nil {
 			continue
 		}
-		
+
 		// Try to find at least one key with our prefix
 		err = iter.Seek(prefix)
 		if err == nil && iter.Valid() {
@@ -371,7 +371,7 @@ func (idx *lsmNodeLabelIndex) Contains(label []byte) (bool, error) {
 				return true, nil
 			}
 		}
-		
+
 		iter.Close()
 	}
 

@@ -569,12 +569,12 @@ func Deserialize(data []byte, out interface{}) error {
 // This is used for node IDs, edge IDs, or other list serialization in indexes
 func SerializeIDs(ids [][]byte) ([]byte, error) {
 	var buf bytes.Buffer
-	
+
 	// Write the list to the buffer
 	if err := WriteBytesList(&buf, ids); err != nil {
 		return nil, err
 	}
-	
+
 	return buf.Bytes(), nil
 }
 
@@ -583,9 +583,9 @@ func DeserializeIDs(data []byte) ([][]byte, error) {
 	if len(data) < 4 {
 		return nil, errors.New("invalid ID list data: too short")
 	}
-	
+
 	buf := bytes.NewReader(data)
-	
+
 	// Read the list from the buffer
 	return ReadBytesList(buf)
 }
@@ -610,7 +610,7 @@ func SerializeCompositeKey(components ...[]byte) []byte {
 	if len(components) > 0 {
 		totalSize-- // Last component doesn't need delimiter
 	}
-	
+
 	// Build the key
 	result := make([]byte, 0, totalSize)
 	for i, comp := range components {
@@ -619,7 +619,7 @@ func SerializeCompositeKey(components ...[]byte) []byte {
 			result = append(result, ':') // Delimiter
 		}
 	}
-	
+
 	return result
 }
 

@@ -46,11 +46,11 @@ func (e *StorageEngine) GetAsOf(key []byte, timestamp int64) ([]byte, error) {
 	// Only check memtables created before or at the requested timestamp
 	for i := len(e.immMemTables) - 1; i >= 0; i-- {
 		imm := e.immMemTables[i]
-		
+
 		// Skip memtables created after the requested timestamp
 		// Note: This assumes memtables have a CreationTime() method, which would need to be added
 		// For now, we'll check all immutable memtables without timestamp filtering
-		
+
 		value, err := imm.Get(key)
 		if err == nil {
 			return value, nil
@@ -63,12 +63,12 @@ func (e *StorageEngine) GetAsOf(key []byte, timestamp int64) ([]byte, error) {
 	// Only consider SSTables created before or at the target timestamp
 	for i := len(e.sstables) - 1; i >= 0; i-- {
 		sst := e.sstables[i]
-		
+
 		// Skip SSTables created after the target timestamp
 		if sst.timestamp > timestamp {
 			continue
 		}
-		
+
 		// Check if the key is potentially in this SSTable's range
 		if sst.minKey != nil && e.config.Comparator(key, sst.minKey) < 0 {
 			continue
@@ -145,13 +145,13 @@ func (e *StorageEngine) ScanAsOf(startKey, endKey []byte, timestamp int64) (*Poi
 	// 2. Immutable memtables created before timestamp
 	// 3. SSTables created before timestamp
 	// 4. Pending deletion SSTables created before timestamp
-	
+
 	// This is a placeholder for the full implementation
 	iterator := &PointInTimeIterator{
 		engine:    e,
 		timestamp: timestamp,
 	}
-	
+
 	return iterator, nil
 }
 
@@ -166,14 +166,14 @@ func (e *StorageEngine) RecoverToPointInTime(timestamp int64, targetDir string) 
 		// Future timestamp doesn't make sense, adjust to current time
 		timestamp = time.Now().UnixNano()
 	}
-	
+
 	// A real implementation would:
 	// 1. Create a new storage engine at the target directory
 	// 2. Copy relevant SSTable files (those created before the timestamp)
 	// 3. Replay the WAL up to the target timestamp
 	// 4. Open the new storage engine
-	
-	// This placeholder returns an error as the full implementation 
+
+	// This placeholder returns an error as the full implementation
 	// would be complex and require careful handling of files
 	return nil, fmt.Errorf("recovery to point in time not fully implemented")
 }

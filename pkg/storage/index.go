@@ -11,10 +11,10 @@ import (
 
 // IndexCache is a generic cache for index results
 type IndexCache struct {
-	mu       sync.RWMutex
-	items    map[string][][]byte
-	maxSize  int
-	hitCount int
+	mu        sync.RWMutex
+	items     map[string][][]byte
+	maxSize   int
+	hitCount  int
 	missCount int
 }
 
@@ -30,7 +30,7 @@ func NewIndexCache(maxSize int) *IndexCache {
 func (c *IndexCache) Get(key []byte) ([][]byte, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	ids, ok := c.items[string(key)]
 	if ok {
 		c.hitCount++
@@ -44,7 +44,7 @@ func (c *IndexCache) Get(key []byte) ([][]byte, bool) {
 func (c *IndexCache) Put(key []byte, ids [][]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	// Simple eviction strategy if we reach max size
 	if len(c.items) >= c.maxSize {
 		// Remove a random item (we could implement LRU in the future)
@@ -53,7 +53,7 @@ func (c *IndexCache) Put(key []byte, ids [][]byte) {
 			break
 		}
 	}
-	
+
 	c.items[string(key)] = ids
 }
 
@@ -61,7 +61,7 @@ func (c *IndexCache) Put(key []byte, ids [][]byte) {
 func (c *IndexCache) Invalidate(key []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	delete(c.items, string(key))
 }
 
@@ -69,7 +69,7 @@ func (c *IndexCache) Invalidate(key []byte) {
 func (c *IndexCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.items = make(map[string][][]byte)
 }
 
@@ -77,7 +77,7 @@ func (c *IndexCache) Clear() {
 func (c *IndexCache) GetStats() (int, int, int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	return len(c.items), c.hitCount, c.missCount
 }
 
@@ -101,7 +101,7 @@ const (
 
 	// Primary index for Edge ID -> Edge data
 	IndexTypeEdgePrimary IndexType = 4
-	
+
 	// Secondary index for Property -> List of Node/Edge IDs
 	IndexTypePropertyValue IndexType = 5
 )
@@ -349,13 +349,13 @@ func NewNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, erro
 	if logger == nil {
 		logger = model.DefaultLoggerInstance
 	}
-	
+
 	// Use LSM-tree based index if configured
 	if storage.useLSMNodeLabelIndex {
 		logger.Info("Using LSM-tree based node label index")
 		return NewLSMNodeLabelIndex(storage, logger)
 	}
-	
+
 	base := NewBaseIndex(storage, logger, []byte("nl:"), IndexTypeNodeLabel)
 	return &nodeLabelIndex{BaseIndex: base}, nil
 }

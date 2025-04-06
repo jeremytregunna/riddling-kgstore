@@ -98,7 +98,7 @@ func (o *Optimizer) optimizePropertyQuery(query *Query) {
 	// - Type-specific optimizations for numeric ranges
 	// - Full-text search capabilities for string properties
 	// - Caching commonly accessed property queries
-	
+
 	// For now, just ensure the parameters are properly formatted
 	if propName, ok := query.Parameters[ParamPropertyName]; ok {
 		// Normalize property name if needed (e.g., trim spaces)

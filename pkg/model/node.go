@@ -20,4 +20,3 @@ func NewNode(id uint64, label string) *Node {
 func (n *Node) GetProperties() map[string]string {
 	return n.Properties
 }
-

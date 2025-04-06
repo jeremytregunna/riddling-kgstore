@@ -93,20 +93,20 @@ func TestPropertyContainer(t *testing.T) {
 	// Test GetAllProperties
 	pc.AddProperty("name", "John Doe")
 	pc.AddProperty("age", "30")
-	
+
 	props := pc.GetAllProperties()
 	if len(props) != 2 {
 		t.Errorf("Expected 2 properties, got %d", len(props))
 	}
-	
+
 	if props["name"] != "John Doe" {
 		t.Errorf("Expected 'name' property to be 'John Doe', got '%s'", props["name"])
 	}
-	
+
 	if props["age"] != "30" {
 		t.Errorf("Expected 'age' property to be '30', got '%s'", props["age"])
 	}
-	
+
 	// Verify that changes to the returned map don't affect the original
 	props["name"] = "Modified"
 	value, _ = pc.GetProperty("name")
@@ -121,26 +121,26 @@ func TestPropertyContainerSerialization(t *testing.T) {
 	pc.AddProperty("name", "John Doe")
 	pc.AddProperty("age", "30")
 	pc.AddProperty("city", "New York")
-	
+
 	// Serialize
 	var buf bytes.Buffer
 	err := pc.SerializeProperties(&buf)
 	if err != nil {
 		t.Fatalf("Failed to serialize PropertyContainer: %v", err)
 	}
-	
+
 	// Deserialize to a new container
 	newPC := NewPropertyContainer()
 	err = newPC.DeserializeProperties(bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		t.Fatalf("Failed to deserialize PropertyContainer: %v", err)
 	}
-	
+
 	// Verify properties were preserved
 	if len(newPC.Properties) != 3 {
 		t.Errorf("Expected 3 properties, got %d", len(newPC.Properties))
 	}
-	
+
 	value, exists := newPC.GetProperty("name")
 	if !exists {
 		t.Error("Expected 'name' property to exist after deserialization")
@@ -148,7 +148,7 @@ func TestPropertyContainerSerialization(t *testing.T) {
 	if value != "John Doe" {
 		t.Errorf("Expected 'name' property to be 'John Doe', got '%s'", value)
 	}
-	
+
 	value, exists = newPC.GetProperty("age")
 	if !exists {
 		t.Error("Expected 'age' property to exist after deserialization")
@@ -156,7 +156,7 @@ func TestPropertyContainerSerialization(t *testing.T) {
 	if value != "30" {
 		t.Errorf("Expected 'age' property to be '30', got '%s'", value)
 	}
-	
+
 	value, exists = newPC.GetProperty("city")
 	if !exists {
 		t.Error("Expected 'city' property to exist after deserialization")
@@ -171,7 +171,7 @@ func TestNodeWithPropertyContainer(t *testing.T) {
 	node := NewNode(123, "Person")
 	node.AddProperty("name", "John Doe")
 	node.AddProperty("age", "30")
-	
+
 	// Check properties are accessible
 	value, exists := node.GetProperty("name")
 	if !exists {
@@ -180,19 +180,19 @@ func TestNodeWithPropertyContainer(t *testing.T) {
 	if value != "John Doe" {
 		t.Errorf("Expected 'name' property to be 'John Doe', got '%s'", value)
 	}
-	
+
 	// Serialize the node
 	data, err := SerializeNode(node)
 	if err != nil {
 		t.Fatalf("Failed to serialize node: %v", err)
 	}
-	
+
 	// Deserialize to a new node
 	newNode, err := DeserializeNode(data)
 	if err != nil {
 		t.Fatalf("Failed to deserialize node: %v", err)
 	}
-	
+
 	// Verify properties were preserved
 	value, exists = newNode.GetProperty("name")
 	if !exists {
@@ -201,7 +201,7 @@ func TestNodeWithPropertyContainer(t *testing.T) {
 	if value != "John Doe" {
 		t.Errorf("Expected 'name' property to be 'John Doe', got '%s'", value)
 	}
-	
+
 	value, exists = newNode.GetProperty("age")
 	if !exists {
 		t.Error("Expected 'age' property to exist after deserialization")
@@ -216,7 +216,7 @@ func TestEdgeWithPropertyContainer(t *testing.T) {
 	edge := NewEdge(123, 456, "KNOWS")
 	edge.AddProperty("since", "2020-01-01")
 	edge.AddProperty("strength", "close")
-	
+
 	// Check properties are accessible
 	value, exists := edge.GetProperty("since")
 	if !exists {
@@ -225,19 +225,19 @@ func TestEdgeWithPropertyContainer(t *testing.T) {
 	if value != "2020-01-01" {
 		t.Errorf("Expected 'since' property to be '2020-01-01', got '%s'", value)
 	}
-	
+
 	// Serialize the edge
 	data, err := SerializeEdge(edge)
 	if err != nil {
 		t.Fatalf("Failed to serialize edge: %v", err)
 	}
-	
+
 	// Deserialize to a new edge
 	newEdge, err := DeserializeEdge(data)
 	if err != nil {
 		t.Fatalf("Failed to deserialize edge: %v", err)
 	}
-	
+
 	// Verify properties were preserved
 	value, exists = newEdge.GetProperty("since")
 	if !exists {
@@ -246,7 +246,7 @@ func TestEdgeWithPropertyContainer(t *testing.T) {
 	if value != "2020-01-01" {
 		t.Errorf("Expected 'since' property to be '2020-01-01', got '%s'", value)
 	}
-	
+
 	value, exists = newEdge.GetProperty("strength")
 	if !exists {
 		t.Error("Expected 'strength' property to exist after deserialization")

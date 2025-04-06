@@ -26,19 +26,19 @@ func NewEngine(storageEngine *storage.StorageEngine, nodeIndex, edgeIndex, nodeL
 
 // NewEngineWithAllIndexes creates a new query engine with all available indexes
 func NewEngineWithAllIndexes(
-	storageEngine *storage.StorageEngine, 
-	nodeIndex, 
-	edgeIndex, 
-	nodeLabels, 
+	storageEngine *storage.StorageEngine,
+	nodeIndex,
+	edgeIndex,
+	nodeLabels,
 	edgeLabels,
 	nodeProperties,
 	edgeProperties storage.Index,
 ) *Engine {
 	executor := NewExecutorWithAllIndexes(
-		storageEngine, 
-		nodeIndex, 
-		edgeIndex, 
-		nodeLabels, 
+		storageEngine,
+		nodeIndex,
+		edgeIndex,
+		nodeLabels,
 		edgeLabels,
 		nodeProperties,
 		edgeProperties,

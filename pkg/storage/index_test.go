@@ -154,13 +154,13 @@ func TestNodePrimaryIndex(t *testing.T) {
 func TestNodeLabelIndex(t *testing.T) {
 	// We'll run tests with both implementations
 	implementations := []struct {
-		name       string
+		name        string
 		useLSMIndex bool
 	}{
 		{"Standard Index", false},
 		{"LSM-tree Index", true},
 	}
-	
+
 	for _, impl := range implementations {
 		t.Run(impl.name, func(t *testing.T) {
 			// Create a temporary directory for the database

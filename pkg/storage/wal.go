@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
 	"git.canoozie.net/riddling/kgstore/pkg/model"
+	"github.com/cespare/xxhash/v2"
 )
 
 // WAL errors

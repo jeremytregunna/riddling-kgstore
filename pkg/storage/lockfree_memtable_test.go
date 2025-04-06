@@ -106,8 +106,8 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 		Logger:  model.DefaultLoggerInstance,
 	})
 
-	const numGoRoutines = 5  // Reduced from 10 to 5
-	const numOperationsPerRoutine = 5  // Reduced from 10 to 5
+	const numGoRoutines = 5           // Reduced from 10 to 5
+	const numOperationsPerRoutine = 5 // Reduced from 10 to 5
 
 	// Channel to collect errors from goroutines
 	errorCh := make(chan string, numGoRoutines*numOperationsPerRoutine)
@@ -143,8 +143,8 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 					errorCh <- fmt.Sprintf("Failed to put key %s after 5 retries: %v", key, putErr)
 					continue
 				}
-				
-				// Small delay after Put to ensure changes are visible 
+
+				// Small delay after Put to ensure changes are visible
 				// This helps with eventual consistency in the lock-free structure
 				time.Sleep(time.Millisecond * 5)
 
@@ -160,7 +160,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 					// Exponential backoff with jitter for better contention handling
 					backoffMs := time.Duration(5 * (retries + 1))
 					if backoffMs > 50 {
-						backoffMs = 50  // Cap at 50ms
+						backoffMs = 50 // Cap at 50ms
 					}
 					time.Sleep(backoffMs * time.Millisecond)
 				}
@@ -188,7 +188,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 						errorCh <- fmt.Sprintf("Failed to delete key %s after 5 retries: %v", key, delErr)
 						continue
 					}
-					
+
 					// Small delay after Delete to ensure changes are visible
 					// This helps with eventual consistency in the lock-free structure
 					time.Sleep(time.Millisecond * 5)
@@ -206,7 +206,7 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 						// Exponential backoff for better contention handling
 						backoffMs := time.Duration(5 * (retries + 1))
 						if backoffMs > 50 {
-							backoffMs = 50  // Cap at 50ms
+							backoffMs = 50 // Cap at 50ms
 						}
 						time.Sleep(backoffMs * time.Millisecond)
 					}

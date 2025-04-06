@@ -83,11 +83,11 @@ func (pc *PropertyContainer) DeserializeProperties(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Add each property
 	for key, value := range properties {
 		pc.AddProperty(key, value)
 	}
-	
+
 	return nil
 }

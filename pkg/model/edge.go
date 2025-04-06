@@ -22,4 +22,3 @@ func NewEdge(sourceID, targetID uint64, label string) *Edge {
 func (e *Edge) GetProperties() map[string]string {
 	return e.Properties
 }
-
