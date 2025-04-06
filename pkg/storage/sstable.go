@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
@@ -40,6 +41,7 @@ type SSTable struct {
 	comparator Comparator   // Comparator for key comparison
 	mu         sync.RWMutex // Mutex for concurrent access
 	isOpen     bool         // Whether the SSTable is open
+	timestamp  int64        // Creation timestamp for this SSTable 
 
 	// Meta information
 	keyCount uint32 // Number of key-value pairs in the SSTable
@@ -53,13 +55,14 @@ type SSTable struct {
 
 // SSTableHeader represents the header of an SSTable data file
 type SSTableHeader struct {
-	Magic     uint32 // Magic number to identify SSTable files
-	Version   uint16 // Version of the SSTable format
-	KeyCount  uint32 // Number of key-value pairs
-	MinKeyLen uint16 // Length of the minimum key
-	MaxKeyLen uint16 // Length of the maximum key
-	MinKey    []byte // Minimum key in the SSTable
-	MaxKey    []byte // Maximum key in the SSTable
+	Magic      uint32 // Magic number to identify SSTable files
+	Version    uint16 // Version of the SSTable format
+	KeyCount   uint32 // Number of key-value pairs
+	MinKeyLen  uint16 // Length of the minimum key
+	MaxKeyLen  uint16 // Length of the maximum key
+	Timestamp  int64  // Creation timestamp of the SSTable
+	MinKey     []byte // Minimum key in the SSTable
+	MaxKey     []byte // Maximum key in the SSTable
 }
 
 // SSTableConfig holds configuration options for creating an SSTable
@@ -68,6 +71,7 @@ type SSTableConfig struct {
 	Path       string       // Directory where SSTable files will be stored
 	Logger     model.Logger // Logger for SSTable operations
 	Comparator Comparator   // Comparator for key comparison
+	Timestamp  int64        // Creation timestamp, defaults to current time if 0
 }
 
 // CreateSSTOptions defines options for SSTable creation
@@ -96,6 +100,11 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 
 	if config.Comparator == nil {
 		config.Comparator = DefaultComparator
+	}
+	
+	// Set timestamp if not provided
+	if config.Timestamp == 0 {
+		config.Timestamp = time.Now().UnixNano()
 	}
 
 	// Ensure the SSTable directory exists
@@ -129,6 +138,7 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 		logger:     config.Logger,
 		comparator: config.Comparator,
 		isOpen:     false,
+		timestamp:  config.Timestamp,
 		indexCache: make(map[string]uint64),
 	}
 
@@ -439,7 +449,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	indexWriter := bufio.NewWriter(indexFile)
 
 	// Reserve space for header in data file
-	headerSize := 14 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2)
+	headerSize := 14 + 8 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2) + Timestamp(8)
 
 	// Get min and max keys from entries
 	minKey := entries[0]
@@ -491,6 +501,9 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	// Write min key length and max key length
 	binary.Write(dataWriter, binary.LittleEndian, uint16(len(minKey)))
 	binary.Write(dataWriter, binary.LittleEndian, uint16(len(maxKey)))
+	
+	// Write timestamp
+	binary.Write(dataWriter, binary.LittleEndian, sst.timestamp)
 
 	// Write min key and max key
 	dataWriter.Write(minKey)
@@ -605,10 +618,11 @@ func (sst *SSTable) createEmptySSTable() error {
 	binary.Write(dataFile, binary.LittleEndian, uint32(0)) // Key count
 	binary.Write(dataFile, binary.LittleEndian, uint16(0)) // Min key length
 	binary.Write(dataFile, binary.LittleEndian, uint16(0)) // Max key length
+	binary.Write(dataFile, binary.LittleEndian, sst.timestamp) // Timestamp
 
 	// Update SSTable metadata
 	sst.keyCount = 0
-	sst.dataSize = 14 // Size of header
+	sst.dataSize = 22 // Size of header (14 + 8 for timestamp)
 	sst.minKey = nil
 	sst.maxKey = nil
 	sst.isOpen = true
@@ -660,6 +674,13 @@ func (sst *SSTable) readHeader() error {
 	if err := binary.Read(dataFile, binary.LittleEndian, &maxKeyLen); err != nil {
 		return fmt.Errorf("failed to read max key length: %w", err)
 	}
+	
+	// Read timestamp
+	var timestamp int64
+	if err := binary.Read(dataFile, binary.LittleEndian, &timestamp); err != nil {
+		return fmt.Errorf("failed to read timestamp: %w", err)
+	}
+	sst.timestamp = timestamp
 
 	// Read min and max keys if they exist
 	if keyCount > 0 {
@@ -955,7 +976,7 @@ func (sst *SSTable) IteratorWithOptions(options IteratorOptions) (*SSTableIterat
 	}
 
 	// Skip the header
-	headerSize := 14 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2)
+	headerSize := 22 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2) + Timestamp(8)
 	if sst.minKey != nil {
 		headerSize += len(sst.minKey)
 	}
@@ -1158,7 +1179,7 @@ func (iter *SSTableIterator) Seek(key []byte) error {
 // SeekToFirst positions the iterator at the first key in the SSTable
 func (iter *SSTableIterator) SeekToFirst() error {
 	// Seek to the beginning of the data
-	headerSize := 14 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2)
+	headerSize := 22 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2) + Timestamp(8)
 	if iter.sst.minKey != nil {
 		headerSize += len(iter.sst.minKey)
 	}
