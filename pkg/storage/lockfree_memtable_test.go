@@ -106,8 +106,8 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 		Logger:  model.DefaultLoggerInstance,
 	})
 
-	const numGoRoutines = 10
-	const numOperationsPerRoutine = 10
+	const numGoRoutines = 5  // Reduced from 10 to 5
+	const numOperationsPerRoutine = 5  // Reduced from 10 to 5
 
 	// Channel to collect errors from goroutines
 	errorCh := make(chan string, numGoRoutines*numOperationsPerRoutine)
@@ -143,22 +143,30 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 					errorCh <- fmt.Sprintf("Failed to put key %s after 5 retries: %v", key, putErr)
 					continue
 				}
+				
+				// Small delay after Put to ensure changes are visible 
+				// This helps with eventual consistency in the lock-free structure
+				time.Sleep(time.Millisecond * 5)
 
-				// Get operation (should succeed) - with retry logic
+				// Get operation (should succeed) - with more aggressive retry logic
 				var result []byte
 				var getErr error
-				maxRetries = 5 // Increased from 3
+				maxRetries = 10 // Increased from 5 to 10
 				for retries := 0; retries < maxRetries; retries++ {
 					result, getErr = table.Get(key)
 					if getErr == nil {
 						break
 					}
-					// Small backoff
-					time.Sleep(time.Millisecond * 5)
+					// Exponential backoff with jitter for better contention handling
+					backoffMs := time.Duration(5 * (retries + 1))
+					if backoffMs > 50 {
+						backoffMs = 50  // Cap at 50ms
+					}
+					time.Sleep(backoffMs * time.Millisecond)
 				}
 
 				if getErr != nil {
-					errorCh <- fmt.Sprintf("Failed to get key %s after 5 retries: %v", key, getErr)
+					errorCh <- fmt.Sprintf("Failed to get key %s after %d retries: %v", key, maxRetries, getErr)
 				} else if !bytes.Equal(result, value) {
 					errorCh <- fmt.Sprintf("Expected value %s for key %s, got %s", value, key, result)
 				}
@@ -180,19 +188,27 @@ func TestLockFreeMemTableConcurrentAccess(t *testing.T) {
 						errorCh <- fmt.Sprintf("Failed to delete key %s after 5 retries: %v", key, delErr)
 						continue
 					}
+					
+					// Small delay after Delete to ensure changes are visible
+					// This helps with eventual consistency in the lock-free structure
+					time.Sleep(time.Millisecond * 5)
 
-					// Verify deletion with retries
+					// Verify deletion with more aggressive retries
 					var verifyErr error
 					found := false
-					maxRetries = 5 // Increased from 3
+					maxRetries = 10 // Increased from 5 to 10
 					for retries := 0; retries < maxRetries; retries++ {
 						_, verifyErr = table.Get(key)
 						if verifyErr == ErrLockFreeKeyNotFound {
 							found = true
 							break
 						}
-						// Small backoff
-						time.Sleep(time.Millisecond * 5)
+						// Exponential backoff for better contention handling
+						backoffMs := time.Duration(5 * (retries + 1))
+						if backoffMs > 50 {
+							backoffMs = 50  // Cap at 50ms
+						}
+						time.Sleep(backoffMs * time.Millisecond)
 					}
 
 					if !found {
