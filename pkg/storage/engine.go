@@ -20,19 +20,20 @@ var (
 // StorageEngine is the main interface to the storage system
 // It manages the MemTable, SSTables, and WAL to provide a durable key-value store
 type StorageEngine struct {
-	mu               sync.RWMutex
-	config           EngineConfig
-	memTable         MemTableInterface   // Current MemTable for writes - can be standard or lock-free
-	immMemTables     []MemTableInterface // Immutable MemTables waiting to be flushed
-	sstables         []*SSTable          // Sorted String Tables (persistent storage)
-	wal              *WAL                // Write-Ahead Log
-	logger           model.Logger        // Logger for storage engine operations
-	compactionCond   *sync.Cond          // Condition variable for signaling compaction
-	compactionDone   chan struct{}       // Channel for signaling compaction is done
-	isOpen           bool                // Whether the storage engine is open
-	nextSSTableID    uint64              // Next SSTable ID to use
-	leveledCompactor *LeveledCompaction  // Manages the leveled compaction strategy
-	txManager        *TransactionManager // Transaction manager for atomic operations
+	mu                  sync.RWMutex
+	config              EngineConfig
+	memTable            MemTableInterface   // Current MemTable for writes - can be standard or lock-free
+	immMemTables        []MemTableInterface // Immutable MemTables waiting to be flushed
+	sstables            []*SSTable          // Sorted String Tables (persistent storage)
+	wal                 *WAL                // Write-Ahead Log
+	logger              model.Logger        // Logger for storage engine operations
+	compactionCond      *sync.Cond          // Condition variable for signaling compaction
+	compactionDone      chan struct{}       // Channel for signaling compaction is done
+	isOpen              bool                // Whether the storage engine is open
+	nextSSTableID       uint64              // Next SSTable ID to use
+	leveledCompactor    *LeveledCompaction  // Manages the leveled compaction strategy
+	txManager           *TransactionManager // Transaction manager for atomic operations
+	useLSMNodeLabelIndex bool               // Whether to use LSM-tree based node label index
 
 	// Two-phase deletion mechanism for safe SSTable removal
 	deletionMu       sync.Mutex           // Mutex for deletion operations (separate from main engine lock)
@@ -67,6 +68,9 @@ type EngineConfig struct {
 	// Use lock-free MemTable implementation
 	UseLockFreeMemTable bool
 
+	// Use LSM-tree based node label index for better performance
+	UseLSMNodeLabelIndex bool
+
 	// Time to wait before physically deleting SSTables after they're removed from the index
 	// This allows ongoing read operations to complete when SSTables are being removed during compaction
 	SSTableDeletionDelay time.Duration
@@ -83,6 +87,7 @@ func DefaultEngineConfig() EngineConfig {
 		BackgroundCompaction: true,
 		BloomFilterFPR:       0.01,             // 1% false positive rate
 		UseLockFreeMemTable:  false,            // Default to original MemTable for backward compatibility
+		UseLSMNodeLabelIndex: true,             // Default to using LSM-tree based node label index
 		SSTableDeletionDelay: 30 * time.Second, // Default 30-second delay for SSTable deletion
 	}
 }
@@ -171,6 +176,7 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		pendingDeletions: make(map[uint64]*SSTable),
 		deletionTime:     make(map[uint64]time.Time),
 		deletionExit:     make(chan struct{}),
+		useLSMNodeLabelIndex: config.UseLSMNodeLabelIndex,
 	}
 
 	// Set up the condition variable for compaction

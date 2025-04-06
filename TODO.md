@@ -85,7 +85,7 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 **Phase 4: Advanced Indexing & ACID Compliance (2-3 months)**
 
 * **Advanced Indexing:**
-    * [ ] Implement LSM-tree based index on Node labels (consistent with storage engine architecture).
+    * [x] Implement LSM-tree based index on Node labels (consistent with storage engine architecture).
     * [ ] Implement full-text index as specialized SSTable format for Node properties.
     * [ ] Implement spatial index as specialized SSTable format (if applicable).
 * **ACID Compliance Enhancements:**

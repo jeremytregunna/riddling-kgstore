@@ -247,7 +247,14 @@ func NewNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, erro
 	if logger == nil {
 		logger = model.DefaultLoggerInstance
 	}
-
+	
+	// Use LSM-tree based index if configured
+	if storage.useLSMNodeLabelIndex {
+		logger.Info("Using LSM-tree based node label index")
+		return NewLSMNodeLabelIndex(storage, logger)
+	}
+	
+	// Otherwise use the original implementation
 	index := &nodeLabelIndex{
 		storage:   storage,
 		isOpen:    true,

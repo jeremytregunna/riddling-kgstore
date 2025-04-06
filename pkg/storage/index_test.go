@@ -152,150 +152,164 @@ func TestNodePrimaryIndex(t *testing.T) {
 }
 
 func TestNodeLabelIndex(t *testing.T) {
-	// Create a temporary directory for the database
-	dbDir, err := os.MkdirTemp("", "node_label_index_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
+	// We'll run tests with both implementations
+	implementations := []struct {
+		name       string
+		useLSMIndex bool
+	}{
+		{"Standard Index", false},
+		{"LSM-tree Index", true},
 	}
-	defer os.RemoveAll(dbDir)
+	
+	for _, impl := range implementations {
+		t.Run(impl.name, func(t *testing.T) {
+			// Create a temporary directory for the database
+			dbDir, err := os.MkdirTemp("", "node_label_index_test")
+			if err != nil {
+				t.Fatalf("Failed to create temp directory: %v", err)
+			}
+			defer os.RemoveAll(dbDir)
 
-	// Create a storage engine
-	config := EngineConfig{
-		DataDir:              dbDir,
-		MemTableSize:         4096,
-		SyncWrites:           true,
-		Logger:               model.NewNoOpLogger(),
-		Comparator:           DefaultComparator,
-		BackgroundCompaction: false,
-		BloomFilterFPR:       0.01,
-	}
+			// Create a storage engine
+			config := EngineConfig{
+				DataDir:              dbDir,
+				MemTableSize:         4096,
+				SyncWrites:           true,
+				Logger:               model.NewNoOpLogger(),
+				Comparator:           DefaultComparator,
+				BackgroundCompaction: false,
+				BloomFilterFPR:       0.01,
+				UseLSMNodeLabelIndex: impl.useLSMIndex,
+			}
 
-	engine, err := NewStorageEngine(config)
-	if err != nil {
-		t.Fatalf("Failed to create storage engine: %v", err)
-	}
-	defer engine.Close()
+			engine, err := NewStorageEngine(config)
+			if err != nil {
+				t.Fatalf("Failed to create storage engine: %v", err)
+			}
+			defer engine.Close()
 
-	// Create a node label index
-	index, err := NewNodeLabelIndex(engine, model.NewNoOpLogger())
-	if err != nil {
-		t.Fatalf("Failed to create node label index: %v", err)
-	}
+			// Create a node label index
+			index, err := NewNodeLabelIndex(engine, model.NewNoOpLogger())
+			if err != nil {
+				t.Fatalf("Failed to create node label index: %v", err)
+			}
 
-	// Test data
-	label1 := []byte("Person")
-	nodeID1 := make([]byte, 8)
-	binary.LittleEndian.PutUint64(nodeID1, 1)
-	nodeID2 := make([]byte, 8)
-	binary.LittleEndian.PutUint64(nodeID2, 2)
+			// Test data
+			label1 := []byte("Person")
+			nodeID1 := make([]byte, 8)
+			binary.LittleEndian.PutUint64(nodeID1, 1)
+			nodeID2 := make([]byte, 8)
+			binary.LittleEndian.PutUint64(nodeID2, 2)
 
-	label2 := []byte("Organization")
-	nodeID3 := make([]byte, 8)
-	binary.LittleEndian.PutUint64(nodeID3, 3)
+			label2 := []byte("Organization")
+			nodeID3 := make([]byte, 8)
+			binary.LittleEndian.PutUint64(nodeID3, 3)
 
-	// Test Put
-	err = index.Put(label1, nodeID1)
-	if err != nil {
-		t.Errorf("Failed to put nodeID1 under label1: %v", err)
-	}
+			// Test Put
+			err = index.Put(label1, nodeID1)
+			if err != nil {
+				t.Errorf("Failed to put nodeID1 under label1: %v", err)
+			}
 
-	err = index.Put(label1, nodeID2)
-	if err != nil {
-		t.Errorf("Failed to put nodeID2 under label1: %v", err)
-	}
+			err = index.Put(label1, nodeID2)
+			if err != nil {
+				t.Errorf("Failed to put nodeID2 under label1: %v", err)
+			}
 
-	err = index.Put(label2, nodeID3)
-	if err != nil {
-		t.Errorf("Failed to put nodeID3 under label2: %v", err)
-	}
+			err = index.Put(label2, nodeID3)
+			if err != nil {
+				t.Errorf("Failed to put nodeID3 under label2: %v", err)
+			}
 
-	// Test GetAll
-	nodesForLabel1, err := index.GetAll(label1)
-	if err != nil {
-		t.Errorf("Failed to GetAll for label1: %v", err)
-	}
-	if len(nodesForLabel1) != 2 {
-		t.Errorf("Expected 2 nodes for label1, got %d", len(nodesForLabel1))
-	}
+			// Test GetAll
+			nodesForLabel1, err := index.GetAll(label1)
+			if err != nil {
+				t.Errorf("Failed to GetAll for label1: %v", err)
+			}
+			if len(nodesForLabel1) != 2 {
+				t.Errorf("Expected 2 nodes for label1, got %d", len(nodesForLabel1))
+			}
 
-	// Verify we got the expected node IDs
-	found1 := false
-	found2 := false
-	for _, id := range nodesForLabel1 {
-		if bytes.Equal(id, nodeID1) {
-			found1 = true
-		}
-		if bytes.Equal(id, nodeID2) {
-			found2 = true
-		}
-	}
-	if !found1 || !found2 {
-		t.Errorf("Did not find expected node IDs for label1: found1=%v, found2=%v", found1, found2)
-	}
+			// Verify we got the expected node IDs
+			found1 := false
+			found2 := false
+			for _, id := range nodesForLabel1 {
+				if bytes.Equal(id, nodeID1) {
+					found1 = true
+				}
+				if bytes.Equal(id, nodeID2) {
+					found2 = true
+				}
+			}
+			if !found1 || !found2 {
+				t.Errorf("Did not find expected node IDs for label1: found1=%v, found2=%v", found1, found2)
+			}
 
-	// Test Get (should return the first node ID)
-	firstNodeID, err := index.Get(label1)
-	if err != nil {
-		t.Errorf("Failed to Get for label1: %v", err)
-	}
-	if !bytes.Equal(firstNodeID, nodeID1) && !bytes.Equal(firstNodeID, nodeID2) {
-		t.Errorf("Get returned unexpected node ID: %v", firstNodeID)
-	}
+			// Test Get (should return the first node ID)
+			firstNodeID, err := index.Get(label1)
+			if err != nil {
+				t.Errorf("Failed to Get for label1: %v", err)
+			}
+			if !bytes.Equal(firstNodeID, nodeID1) && !bytes.Equal(firstNodeID, nodeID2) {
+				t.Errorf("Get returned unexpected node ID: %v", firstNodeID)
+			}
 
-	// Test Contains
-	exists, err := index.Contains(label1)
-	if err != nil {
-		t.Errorf("Error checking if label1 exists: %v", err)
-	}
-	if !exists {
-		t.Error("Label1 should exist in the index")
-	}
+			// Test Contains
+			exists, err := index.Contains(label1)
+			if err != nil {
+				t.Errorf("Error checking if label1 exists: %v", err)
+			}
+			if !exists {
+				t.Error("Label1 should exist in the index")
+			}
 
-	// Test DeleteValue
-	err = index.DeleteValue(label1, nodeID1)
-	if err != nil {
-		t.Errorf("Failed to DeleteValue for nodeID1 under label1: %v", err)
-	}
+			// Test DeleteValue
+			err = index.DeleteValue(label1, nodeID1)
+			if err != nil {
+				t.Errorf("Failed to DeleteValue for nodeID1 under label1: %v", err)
+			}
 
-	// Verify nodeID1 is gone
-	nodesForLabel1, err = index.GetAll(label1)
-	if err != nil {
-		t.Errorf("Failed to GetAll for label1 after delete: %v", err)
-	}
-	if len(nodesForLabel1) != 1 || !bytes.Equal(nodesForLabel1[0], nodeID2) {
-		t.Errorf("Expected only nodeID2 for label1, got %v", nodesForLabel1)
-	}
+			// Verify nodeID1 is gone
+			nodesForLabel1, err = index.GetAll(label1)
+			if err != nil {
+				t.Errorf("Failed to GetAll for label1 after delete: %v", err)
+			}
+			if len(nodesForLabel1) != 1 || !bytes.Equal(nodesForLabel1[0], nodeID2) {
+				t.Errorf("Expected only nodeID2 for label1, got %v", nodesForLabel1)
+			}
 
-	// Test Delete
-	err = index.Delete(label1)
-	if err != nil {
-		t.Errorf("Failed to Delete label1: %v", err)
-	}
+			// Test Delete
+			err = index.Delete(label1)
+			if err != nil {
+				t.Errorf("Failed to Delete label1: %v", err)
+			}
 
-	// Verify label1 is gone
-	exists, err = index.Contains(label1)
-	if err != nil {
-		t.Errorf("Error checking if deleted label exists: %v", err)
-	}
-	if exists {
-		t.Error("Deleted label should not exist in the index")
-	}
+			// Verify label1 is gone
+			exists, err = index.Contains(label1)
+			if err != nil {
+				t.Errorf("Error checking if deleted label exists: %v", err)
+			}
+			if exists {
+				t.Error("Deleted label should not exist in the index")
+			}
 
-	// Verify index type
-	if index.GetType() != IndexTypeNodeLabel {
-		t.Errorf("Expected index type %d, got %d", IndexTypeNodeLabel, index.GetType())
-	}
+			// Verify index type
+			if index.GetType() != IndexTypeNodeLabel {
+				t.Errorf("Expected index type %d, got %d", IndexTypeNodeLabel, index.GetType())
+			}
 
-	// Test Flush
-	err = index.Flush()
-	if err != nil {
-		t.Errorf("Failed to flush index: %v", err)
-	}
+			// Test Flush
+			err = index.Flush()
+			if err != nil {
+				t.Errorf("Failed to flush index: %v", err)
+			}
 
-	// Test Close
-	err = index.Close()
-	if err != nil {
-		t.Errorf("Failed to close index: %v", err)
+			// Test Close
+			err = index.Close()
+			if err != nil {
+				t.Errorf("Failed to close index: %v", err)
+			}
+		})
 	}
 }
 
