@@ -3,6 +3,7 @@ package query
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Optimizer optimizes queries by applying transformation rules
@@ -44,6 +45,12 @@ func (o *Optimizer) Optimize(query *Query) (*Query, error) {
 		// No specific optimizations for this query type yet
 	case QueryTypeFindEdgesByLabel:
 		// No specific optimizations for this query type yet
+	case QueryTypeFindNodesByProperty:
+		// Use property index optimizations
+		o.optimizePropertyQuery(optimized)
+	case QueryTypeFindEdgesByProperty:
+		// Use property index optimizations
+		o.optimizePropertyQuery(optimized)
 	case QueryTypeFindNeighbors:
 		o.optimizeNeighborsQuery(optimized)
 	case QueryTypeFindPath:
@@ -82,5 +89,19 @@ func (o *Optimizer) optimizePathQuery(query *Query) {
 				}
 			}
 		}
+	}
+}
+
+// optimizePropertyQuery optimizes property-based queries
+func (o *Optimizer) optimizePropertyQuery(query *Query) {
+	// No specific optimizations yet, but we could add:
+	// - Type-specific optimizations for numeric ranges
+	// - Full-text search capabilities for string properties
+	// - Caching commonly accessed property queries
+	
+	// For now, just ensure the parameters are properly formatted
+	if propName, ok := query.Parameters[ParamPropertyName]; ok {
+		// Normalize property name if needed (e.g., trim spaces)
+		query.Parameters[ParamPropertyName] = strings.TrimSpace(propName)
 	}
 }

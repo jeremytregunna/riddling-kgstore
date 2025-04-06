@@ -117,3 +117,58 @@ func TestOptimizer_Optimize(t *testing.T) {
 		t.Errorf("Expected error for unsupported query type")
 	}
 }
+
+func TestOptimizer_PropertyQueries(t *testing.T) {
+	optimizer := NewOptimizer()
+
+	tests := []struct {
+		name     string
+		query    *Query
+		validate func(*Query, *testing.T)
+	}{
+		{
+			name: "Find nodes by property - Trim property name",
+			query: &Query{
+				Type: QueryTypeFindNodesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  " name ", // Extra spaces
+					ParamPropertyValue: "Alice",
+				},
+			},
+			validate: func(optimized *Query, t *testing.T) {
+				if optimized.Parameters[ParamPropertyName] != "name" {
+					t.Errorf("Expected property name to be trimmed to 'name', got '%s'", optimized.Parameters[ParamPropertyName])
+				}
+			},
+		},
+		{
+			name: "Find edges by property - Maintain property values",
+			query: &Query{
+				Type: QueryTypeFindEdgesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  "role",
+					ParamPropertyValue: "Developer",
+				},
+			},
+			validate: func(optimized *Query, t *testing.T) {
+				if optimized.Parameters[ParamPropertyName] != "role" {
+					t.Errorf("Expected property name 'role', got '%s'", optimized.Parameters[ParamPropertyName])
+				}
+				if optimized.Parameters[ParamPropertyValue] != "Developer" {
+					t.Errorf("Expected property value 'Developer', got '%s'", optimized.Parameters[ParamPropertyValue])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			optimized, err := optimizer.Optimize(tt.query)
+			if err != nil {
+				t.Fatalf("Optimizer.Optimize() error = %v", err)
+			}
+
+			tt.validate(optimized, t)
+		})
+	}
+}

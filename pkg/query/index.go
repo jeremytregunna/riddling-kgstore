@@ -47,9 +47,31 @@ func CreateIndexes(dataDir string) (*Engine, error) {
 		storageEngine.Close()
 		return nil, fmt.Errorf("failed to create edge label index: %w", err)
 	}
+    
+	// Create the node property index
+	nodeProperties, err := storage.NewNodePropertyIndex(storageEngine, model.DefaultLoggerInstance)
+	if err != nil {
+		storageEngine.Close()
+		return nil, fmt.Errorf("failed to create node property index: %w", err)
+	}
 
-	// Create the query engine
-	queryEngine := NewEngine(storageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	// Create the edge property index
+	edgeProperties, err := storage.NewEdgePropertyIndex(storageEngine, model.DefaultLoggerInstance)
+	if err != nil {
+		storageEngine.Close()
+		return nil, fmt.Errorf("failed to create edge property index: %w", err)
+	}
+
+	// Create the query engine with all the indexes
+	queryEngine := NewEngineWithAllIndexes(
+		storageEngine, 
+		nodeIndex, 
+		edgeIndex, 
+		nodeLabels, 
+		edgeLabels,
+		nodeProperties,
+		edgeProperties,
+	)
 
 	return queryEngine, nil
 }
@@ -94,9 +116,31 @@ func OpenIndexes(dataDir string) (*Engine, error) {
 		storageEngine.Close()
 		return nil, fmt.Errorf("failed to open edge label index: %w", err)
 	}
+    
+	// Open the node property index
+	nodeProperties, err := storage.NewNodePropertyIndex(storageEngine, model.DefaultLoggerInstance)
+	if err != nil {
+		storageEngine.Close()
+		return nil, fmt.Errorf("failed to open node property index: %w", err)
+	}
 
-	// Create the query engine
-	queryEngine := NewEngine(storageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	// Open the edge property index
+	edgeProperties, err := storage.NewEdgePropertyIndex(storageEngine, model.DefaultLoggerInstance)
+	if err != nil {
+		storageEngine.Close()
+		return nil, fmt.Errorf("failed to open edge property index: %w", err)
+	}
+
+	// Create the query engine with all the indexes
+	queryEngine := NewEngineWithAllIndexes(
+		storageEngine, 
+		nodeIndex, 
+		edgeIndex, 
+		nodeLabels, 
+		edgeLabels,
+		nodeProperties,
+		edgeProperties,
+	)
 
 	return queryEngine, nil
 }

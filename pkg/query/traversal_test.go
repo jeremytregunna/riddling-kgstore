@@ -13,7 +13,7 @@ func TestTraversal_BFS(t *testing.T) {
 	}
 
 	// Set up test database
-	engine, nodeIndex, edgeIndex, _, _, tempDir := setupTestDB(t)
+	engine, nodeIndex, edgeIndex, _, _, _, _, tempDir := setupTestDB(t)
 	defer cleanupTestDB(t, tempDir)
 
 	// Create traversal
@@ -86,7 +86,7 @@ func TestTraversal_DFS(t *testing.T) {
 	}
 
 	// Set up test database
-	engine, nodeIndex, edgeIndex, _, _, tempDir := setupTestDB(t)
+	engine, nodeIndex, edgeIndex, _, _, _, _, tempDir := setupTestDB(t)
 	defer cleanupTestDB(t, tempDir)
 
 	// Create traversal

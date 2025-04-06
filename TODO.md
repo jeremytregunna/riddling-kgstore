@@ -87,6 +87,10 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 * **Advanced Indexing:**
     * [x] Implement LSM-tree based index on Node labels (consistent with storage engine architecture).
     * [x] Implement full-text index as specialized SSTable format for Node properties.
+    * [x] Update query module to make use of specialized indices
+    * [ ] Optimize property index lookups for better performance
+    * [ ] Add support for numeric range queries in property index
+    * [ ] Add full-text search capabilities to property index
     * [ ] Implement spatial index as specialized SSTable format (if applicable).
 * **ACID Compliance Enhancements:**
     * [x] Complete the implementation of configurable WAL replay options

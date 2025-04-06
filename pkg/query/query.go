@@ -11,9 +11,38 @@ type Engine struct {
 	Traversal *Traversal
 }
 
-// NewEngine creates a new query engine
+// NewEngine creates a new query engine with basic indexes
 func NewEngine(storageEngine *storage.StorageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels storage.Index) *Engine {
 	executor := NewExecutor(storageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	optimizer := NewOptimizer()
+	traversal := NewTraversal(storageEngine, nodeIndex, edgeIndex)
+
+	return &Engine{
+		Executor:  executor,
+		Optimizer: optimizer,
+		Traversal: traversal,
+	}
+}
+
+// NewEngineWithAllIndexes creates a new query engine with all available indexes
+func NewEngineWithAllIndexes(
+	storageEngine *storage.StorageEngine, 
+	nodeIndex, 
+	edgeIndex, 
+	nodeLabels, 
+	edgeLabels,
+	nodeProperties,
+	edgeProperties storage.Index,
+) *Engine {
+	executor := NewExecutorWithAllIndexes(
+		storageEngine, 
+		nodeIndex, 
+		edgeIndex, 
+		nodeLabels, 
+		edgeLabels,
+		nodeProperties,
+		edgeProperties,
+	)
 	optimizer := NewOptimizer()
 	traversal := NewTraversal(storageEngine, nodeIndex, edgeIndex)
 
@@ -81,6 +110,32 @@ func (e *Engine) FindPath(sourceID, targetID uint64, maxHops int) (*Result, erro
 			ParamSourceID: convertUint64ToString(sourceID),
 			ParamTargetID: convertUint64ToString(targetID),
 			ParamMaxHops:  convertIntToString(maxHops),
+		},
+	}
+
+	return e.Executor.Execute(query)
+}
+
+// FindNodesByProperty finds all nodes with a specific property value
+func (e *Engine) FindNodesByProperty(propertyName string, propertyValue string) (*Result, error) {
+	query := &Query{
+		Type: QueryTypeFindNodesByProperty,
+		Parameters: map[string]string{
+			ParamPropertyName:  propertyName,
+			ParamPropertyValue: propertyValue,
+		},
+	}
+
+	return e.Executor.Execute(query)
+}
+
+// FindEdgesByProperty finds all edges with a specific property value
+func (e *Engine) FindEdgesByProperty(propertyName string, propertyValue string) (*Result, error) {
+	query := &Query{
+		Type: QueryTypeFindEdgesByProperty,
+		Parameters: map[string]string{
+			ParamPropertyName:  propertyName,
+			ParamPropertyValue: propertyValue,
 		},
 	}
 

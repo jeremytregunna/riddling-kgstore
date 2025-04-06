@@ -180,3 +180,68 @@ func TestQuery_String(t *testing.T) {
 func contains(s, substr string) bool {
 	return s != "" && substr != "" && strings.Contains(s, substr)
 }
+
+func TestPropertyQueriesParsing(t *testing.T) {
+	tests := []struct {
+		name        string
+		queryStr    string
+		wantType    QueryType
+		wantParams  map[string]string
+		wantErr     bool
+		wantErrText string
+	}{
+		{
+			name:     "Find nodes by property",
+			queryStr: "FIND_NODES_BY_PROPERTY(propertyName: \"name\", propertyValue: \"Alice\")",
+			wantType: QueryTypeFindNodesByProperty,
+			wantParams: map[string]string{
+				"propertyName":  "name",
+				"propertyValue": "Alice",
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Find edges by property",
+			queryStr: "FIND_EDGES_BY_PROPERTY(propertyName: \"role\", propertyValue: \"Developer\")",
+			wantType: QueryTypeFindEdgesByProperty,
+			wantParams: map[string]string{
+				"propertyName":  "role",
+				"propertyValue": "Developer",
+			},
+			wantErr: false,
+		},
+		{
+			name:        "Missing required parameter for nodes by property",
+			queryStr:    "FIND_NODES_BY_PROPERTY(propertyName: \"name\")",
+			wantErr:     true,
+			wantErrText: "invalid query: missing required parameter 'propertyValue'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Parse(tt.queryStr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if err == nil || !contains(err.Error(), tt.wantErrText) {
+					t.Errorf("Parse() error = %v, want error containing %v", err, tt.wantErrText)
+				}
+				return
+			}
+			if got.Type != tt.wantType {
+				t.Errorf("Parse() got type = %v, want %v", got.Type, tt.wantType)
+			}
+			if len(got.Parameters) != len(tt.wantParams) {
+				t.Errorf("Parse() got %d parameters, want %d", len(got.Parameters), len(tt.wantParams))
+			}
+			for k, v := range tt.wantParams {
+				if got.Parameters[k] != v {
+					t.Errorf("Parse() parameter %s = %v, want %v", k, got.Parameters[k], v)
+				}
+			}
+		})
+	}
+}

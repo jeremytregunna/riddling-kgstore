@@ -11,7 +11,7 @@ import (
 )
 
 // setupTestDB sets up a test database with some nodes and edges
-func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.Index, storage.Index, storage.Index, string) {
+func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.Index, storage.Index, storage.Index, storage.Index, storage.Index, string) {
 	// Create a temporary directory for the test database
 	tempDir, err := os.MkdirTemp("", "kgstore-test-*")
 	if err != nil {
@@ -54,15 +54,28 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 		os.RemoveAll(tempDir)
 		t.Fatalf("Failed to create edge label index: %v", err)
 	}
+	
+	// Create the property indexes
+	nodeProperties, err := storage.NewNodePropertyIndex(engine, model.DefaultLoggerInstance)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		t.Fatalf("Failed to create node property index: %v", err)
+	}
+	
+	edgeProperties, err := storage.NewEdgePropertyIndex(engine, model.DefaultLoggerInstance)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		t.Fatalf("Failed to create edge property index: %v", err)
+	}
 
 	// Add some test data
-	addTestData(t, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	addTestData(t, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
 
-	return engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, tempDir
+	return engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir
 }
 
 // addTestData adds some test nodes and edges to the indexes
-func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels storage.Index) {
+func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties storage.Index) {
 	// Create some nodes
 	nodes := []model.Node{
 		{ID: 1, Label: "Person", Properties: map[string]string{"name": "Alice", "age": "30"}},
@@ -93,20 +106,29 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to add node to index: %v", err)
 		}
+		
+            // Add node properties to the property index
+            for propName, propValue := range node.Properties {
+                // Create key in the format propertyName|propertyValue
+                propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
+                // The entityID (nodeID as string) becomes the value for the property index
+                nodeIDStr := fmt.Sprintf("%d", node.ID)
+                err = nodeProperties.Put(propKey, []byte(nodeIDStr))
+                if err != nil {
+                    t.Fatalf("Failed to add node property to index: %v", err)
+                }
+            }
 	}
 
 	// Add node labels to the label index
 	for label, nodeIDs := range nodesByLabel {
-		// Serialize the node IDs
-		nodeIDsBytes, err := model.Serialize(nodeIDs)
-		if err != nil {
-			t.Fatalf("Failed to serialize node IDs for label %s: %v", label, err)
-		}
-
-		// Add to node label index
-		err = nodeLabels.Put([]byte(label), nodeIDsBytes)
-		if err != nil {
-			t.Fatalf("Failed to add node label index entry for label %s: %v", label, err)
+		// For each node ID, add it to the label index individually - works with both regular and LSM implementation
+		for _, id := range nodeIDs {
+			idStr := fmt.Sprintf("%d", id)
+			err := nodeLabels.Put([]byte(label), []byte(idStr))
+			if err != nil {
+				t.Fatalf("Failed to add node %s to label %s index: %v", idStr, label, err)
+			}
 		}
 	}
 
@@ -150,20 +172,28 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels stor
 		if err != nil {
 			t.Fatalf("Failed to add edge to index: %v", err)
 		}
+		
+		// Add edge properties to the property index
+            // Add edge properties to the property index
+            for propName, propValue := range edge.Properties {
+                // Create key in the format propertyName|propertyValue
+                propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
+                // The entityID (edgeID) becomes the value for the property index
+                err = edgeProperties.Put(propKey, []byte(edgeID))
+                if err != nil {
+                    t.Fatalf("Failed to add edge property to index: %v", err)
+                }
+            }
 	}
 
 	// Add edge labels to the label index
 	for label, edgeIDs := range edgesByLabel {
-		// Serialize the edge IDs
-		edgeIDsBytes, err := model.Serialize(edgeIDs)
-		if err != nil {
-			t.Fatalf("Failed to serialize edge IDs for label %s: %v", label, err)
-		}
-
-		// Add to edge label index
-		err = edgeLabels.Put([]byte(label), edgeIDsBytes)
-		if err != nil {
-			t.Fatalf("Failed to add edge label index entry for label %s: %v", label, err)
+		// Add each edge ID individually to the label index
+		for _, id := range edgeIDs {
+			err := edgeLabels.Put([]byte(label), []byte(id))
+			if err != nil {
+				t.Fatalf("Failed to add edge %s to label %s index: %v", id, label, err)
+			}
 		}
 	}
 
@@ -212,11 +242,11 @@ func TestExecutor_Execute(t *testing.T) {
 	}
 
 	// Set up test database
-	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, tempDir := setupTestDB(t)
+	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir := setupTestDB(t)
 	defer cleanupTestDB(t, tempDir)
 
-	// Create executor
-	executor := NewExecutor(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	// Create executor with all indexes
+	executor := NewExecutorWithAllIndexes(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
 
 	// Test cases
 	tests := []struct {
@@ -464,6 +494,148 @@ func TestExecutor_Execute(t *testing.T) {
 	}
 }
 
+func TestExecutor_PropertyIndexingDebug(t *testing.T) {
+	// Skip during short tests
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	// Set up test database
+	_, _, _, _, _, nodeProperties, _, tempDir := setupTestDB(t)
+	defer cleanupTestDB(t, tempDir)
+
+	// Add a test node with a property directly to the property index
+	nodeProperties.Put([]byte("name|Alice"), []byte("1"))
+	
+	// Verify the property index contains the data
+	results, err := nodeProperties.GetAll([]byte("name|Alice"))
+	if err != nil {
+		t.Fatalf("Error retrieving property from index: %v", err)
+	}
+	
+	t.Logf("Property index has %d results for name|Alice", len(results))
+	for i, res := range results {
+		t.Logf("Result %d: %s", i, string(res))
+	}
+}
+
+func TestExecutor_PropertyQueries(t *testing.T) {
+	// Skip during short tests
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	// Set up test database
+	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir := setupTestDB(t)
+	defer cleanupTestDB(t, tempDir)
+
+	// Create executor with all indexes
+	executor := NewExecutorWithAllIndexes(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
+
+	// Test cases
+	tests := []struct {
+		name     string
+		query    *Query
+		wantErr  bool
+		validate func(*Result, *testing.T)
+	}{
+		{
+			name: "Find nodes by property - name:Alice",
+			query: &Query{
+				Type: QueryTypeFindNodesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  "name",
+					ParamPropertyValue: "Alice",
+				},
+			},
+			wantErr: false,
+			validate: func(result *Result, t *testing.T) {
+				if len(result.Nodes) != 1 {
+					t.Errorf("Expected 1 node, got %d", len(result.Nodes))
+				}
+				if len(result.Nodes) > 0 && result.Nodes[0].ID != 1 {
+					t.Errorf("Expected node ID 1, got %d", result.Nodes[0].ID)
+				}
+			},
+		},
+		{
+			name: "Find nodes by property - age:25",
+			query: &Query{
+				Type: QueryTypeFindNodesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  "age",
+					ParamPropertyValue: "25",
+				},
+			},
+			wantErr: false,
+			validate: func(result *Result, t *testing.T) {
+				if len(result.Nodes) != 1 {
+					t.Errorf("Expected 1 node, got %d", len(result.Nodes))
+				}
+				if len(result.Nodes) > 0 && result.Nodes[0].ID != 2 {
+					t.Errorf("Expected node ID 2, got %d", result.Nodes[0].ID)
+				}
+			},
+		},
+		{
+			name: "Find edges by property - role:Developer",
+			query: &Query{
+				Type: QueryTypeFindEdgesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  "role",
+					ParamPropertyValue: "Developer",
+				},
+			},
+			wantErr: false,
+			validate: func(result *Result, t *testing.T) {
+				if len(result.Edges) != 2 {
+					t.Errorf("Expected 2 edges, got %d", len(result.Edges))
+				}
+				for _, edge := range result.Edges {
+					if edge.Properties["role"] != "Developer" {
+						t.Errorf("Expected edge property 'role'='Developer', got '%s'", edge.Properties["role"])
+					}
+				}
+			},
+		},
+		{
+			name: "Find edges by property - since:2018",
+			query: &Query{
+				Type: QueryTypeFindEdgesByProperty,
+				Parameters: map[string]string{
+					ParamPropertyName:  "since", 
+					ParamPropertyValue: "2018",
+				},
+			},
+			wantErr: false,
+			validate: func(result *Result, t *testing.T) {
+				if len(result.Edges) != 2 {
+					t.Errorf("Expected 2 edges, got %d", len(result.Edges))
+				}
+				for _, edge := range result.Edges {
+					if edge.Properties["since"] != "2018" {
+						t.Errorf("Expected edge property 'since'='2018', got '%s'", edge.Properties["since"])
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := executor.Execute(tt.query)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Executor.Execute() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && result != nil {
+				tt.validate(result, t)
+			}
+		})
+	}
+}
+
 func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 	// Skip during short tests
 	if testing.Short() {
@@ -471,11 +643,11 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 	}
 
 	// Set up test database
-	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, tempDir := setupTestDB(t)
+	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir := setupTestDB(t)
 	defer cleanupTestDB(t, tempDir)
 
-	// Create query engine
-	queryEngine := NewEngine(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	// Create query engine with all indexes
+	queryEngine := NewEngineWithAllIndexes(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
 
 	// Test cases
 	tests := []struct {

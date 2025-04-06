@@ -11,10 +11,12 @@ import (
 type QueryType string
 
 const (
-	QueryTypeFindNodesByLabel QueryType = "FIND_NODES_BY_LABEL"
-	QueryTypeFindEdgesByLabel QueryType = "FIND_EDGES_BY_LABEL"
-	QueryTypeFindNeighbors    QueryType = "FIND_NEIGHBORS"
-	QueryTypeFindPath         QueryType = "FIND_PATH"
+	QueryTypeFindNodesByLabel    QueryType = "FIND_NODES_BY_LABEL"
+	QueryTypeFindEdgesByLabel    QueryType = "FIND_EDGES_BY_LABEL"
+	QueryTypeFindNodesByProperty QueryType = "FIND_NODES_BY_PROPERTY"
+	QueryTypeFindEdgesByProperty QueryType = "FIND_EDGES_BY_PROPERTY"
+	QueryTypeFindNeighbors       QueryType = "FIND_NEIGHBORS"
+	QueryTypeFindPath            QueryType = "FIND_PATH"
 )
 
 // Query represents a parsed query
@@ -25,12 +27,14 @@ type Query struct {
 
 // Parameter keys
 const (
-	ParamLabel     = "label"
-	ParamNodeID    = "nodeId"
-	ParamDirection = "direction"
-	ParamMaxHops   = "maxHops"
-	ParamSourceID  = "sourceId"
-	ParamTargetID  = "targetId"
+	ParamLabel        = "label"
+	ParamNodeID       = "nodeId"
+	ParamDirection    = "direction"
+	ParamMaxHops      = "maxHops"
+	ParamSourceID     = "sourceId"
+	ParamTargetID     = "targetId"
+	ParamPropertyName = "propertyName"
+	ParamPropertyValue = "propertyValue"
 )
 
 // Direction types for traversal
@@ -80,7 +84,9 @@ func Parse(queryStr string) (*Query, error) {
 
 	// Validate query type
 	switch queryType {
-	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel, QueryTypeFindNeighbors, QueryTypeFindPath:
+	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel, 
+	     QueryTypeFindNodesByProperty, QueryTypeFindEdgesByProperty,
+	     QueryTypeFindNeighbors, QueryTypeFindPath:
 		// Valid query type
 	default:
 		return nil, fmt.Errorf("%w: unknown query type: %s", ErrInvalidQuery, queryType)
@@ -132,6 +138,13 @@ func validateQueryParameters(query *Query) error {
 	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel:
 		if _, ok := query.Parameters[ParamLabel]; !ok {
 			return fmt.Errorf("%w: missing required parameter 'label'", ErrInvalidQuery)
+		}
+	case QueryTypeFindNodesByProperty, QueryTypeFindEdgesByProperty:
+		if _, ok := query.Parameters[ParamPropertyName]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'propertyName'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamPropertyValue]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'propertyValue'", ErrInvalidQuery)
 		}
 	case QueryTypeFindNeighbors:
 		if _, ok := query.Parameters[ParamNodeID]; !ok {

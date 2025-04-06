@@ -11,11 +11,11 @@ func TestEngine_API(t *testing.T) {
 	}
 
 	// Set up test database
-	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, tempDir := setupTestDB(t)
+	engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir := setupTestDB(t)
 	defer cleanupTestDB(t, tempDir)
 
-	// Create query engine
-	queryEngine := NewEngine(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels)
+	// Create query engine with all indexes
+	queryEngine := NewEngineWithAllIndexes(engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
 
 	// Test FindNodesByLabel
 	t.Run("FindNodesByLabel", func(t *testing.T) {
