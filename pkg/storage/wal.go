@@ -5,13 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
@@ -960,28 +960,28 @@ func (w *WAL) writeRecord(record WALRecord) error {
 		totalSize += 4 + len(record.Value) // Value length + value
 	}
 
-	// Write record header (CRC + length)
-	// First calculate CRC
-	crc := crc32.NewIEEE()
-	crc.Write([]byte{byte(record.Type)})
-	binary.Write(crc, binary.LittleEndian, record.Timestamp)
-	binary.Write(crc, binary.LittleEndian, record.TxID)
+	// Write record header (xxHash64 checksum + length)
+	// First calculate xxHash64
+	hasher := xxhash.New()
+	hasher.Write([]byte{byte(record.Type)})
+	binary.Write(hasher, binary.LittleEndian, record.Timestamp)
+	binary.Write(hasher, binary.LittleEndian, record.TxID)
 
-	// Add key/value to CRC for operations that use them
+	// Add key/value to hash for operations that use them
 	if record.Type == RecordPut || record.Type == RecordDelete {
-		binary.Write(crc, binary.LittleEndian, uint32(len(record.Key)))
-		crc.Write(record.Key)
+		binary.Write(hasher, binary.LittleEndian, uint32(len(record.Key)))
+		hasher.Write(record.Key)
 	}
 
 	if record.Type == RecordPut {
-		binary.Write(crc, binary.LittleEndian, uint32(len(record.Value)))
-		crc.Write(record.Value)
+		binary.Write(hasher, binary.LittleEndian, uint32(len(record.Value)))
+		hasher.Write(record.Value)
 	}
 
-	crcValue := crc.Sum32()
+	hashValue := hasher.Sum64()
 
-	// Write CRC
-	if err := binary.Write(w.writer, binary.LittleEndian, crcValue); err != nil {
+	// Write xxHash64 checksum
+	if err := binary.Write(w.writer, binary.LittleEndian, hashValue); err != nil {
 		return err
 	}
 
@@ -1044,9 +1044,9 @@ func (w *WAL) writeRecord(record WALRecord) error {
 func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 	var record WALRecord
 
-	// Read CRC
-	var crcValue uint32
-	if err := binary.Read(reader, binary.LittleEndian, &crcValue); err != nil {
+	// Read xxHash64 checksum
+	var hashValue uint64
+	if err := binary.Read(reader, binary.LittleEndian, &hashValue); err != nil {
 		return record, err
 	}
 
@@ -1110,23 +1110,23 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 		}
 	}
 
-	// Verify CRC
-	crc := crc32.NewIEEE()
-	crc.Write([]byte{byte(record.Type)})
-	binary.Write(crc, binary.LittleEndian, record.Timestamp)
-	binary.Write(crc, binary.LittleEndian, record.TxID)
+	// Verify xxHash64 checksum
+	hasher := xxhash.New()
+	hasher.Write([]byte{byte(record.Type)})
+	binary.Write(hasher, binary.LittleEndian, record.Timestamp)
+	binary.Write(hasher, binary.LittleEndian, record.TxID)
 
 	if record.Type == RecordPut || record.Type == RecordDelete {
-		binary.Write(crc, binary.LittleEndian, uint32(len(record.Key)))
-		crc.Write(record.Key)
+		binary.Write(hasher, binary.LittleEndian, uint32(len(record.Key)))
+		hasher.Write(record.Key)
 	}
 
 	if record.Type == RecordPut {
-		binary.Write(crc, binary.LittleEndian, uint32(len(record.Value)))
-		crc.Write(record.Value)
+		binary.Write(hasher, binary.LittleEndian, uint32(len(record.Value)))
+		hasher.Write(record.Value)
 	}
 
-	if crc.Sum32() != crcValue {
+	if hasher.Sum64() != hashValue {
 		return record, ErrWALCorrupted
 	}
 

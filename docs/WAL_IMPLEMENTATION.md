@@ -11,7 +11,7 @@ The Write-Ahead Log (WAL) is a critical component of KGStore that ensures durabi
 The WAL implementation in KGStore is mature and includes:
 
 ✅ **Fully Implemented**:
-- Durable write-ahead logging with CRC integrity checks
+- Durable write-ahead logging with xxHash64 integrity checks
 - Transaction support (begin, commit, rollback)
 - Comprehensive recovery with multiple recovery modes
 - Atomic transaction application
@@ -19,6 +19,9 @@ The WAL implementation in KGStore is mature and includes:
 - Version tracking for point-in-time recovery
 - Detailed statistics for recovery operations
 - Corrupted record detection and handling
+
+💡 **Future ideas for improvements**:
+- Enhanced compression for records to reduce storage requirements
 
 ## Core Architecture
 
@@ -56,7 +59,7 @@ The WAL implementation in KGStore is mature and includes:
    type ReplayOptions struct {
        // StrictMode causes replay to fail completely if any record is corrupted
        StrictMode bool
-       
+
        // AtomicTxOnly ensures that transactions are applied atomically or not at all
        AtomicTxOnly bool
    }
@@ -94,7 +97,7 @@ The WAL implementation in KGStore is mature and includes:
    - `RecordTxRollback` (5): Marks the rollback of a transaction
 
 3. **Record Format**:
-   - CRC32 checksum (4 bytes)
+   - xxHash64 checksum (8 bytes)
    - Record size (4 bytes)
    - Record type (1 byte)
    - Timestamp (8 bytes)
@@ -201,14 +204,14 @@ This ensures that committed transactions always have higher versions than incomp
 
 ### Data Integrity Features
 
-1. **CRC32 Checksums**: Every record includes a CRC32 checksum that is verified during reading
+1. **xxHash64 Checksums**: Every record includes a xxHash64 checksum that is verified during reading
 2. **Record Type Validation**: Record types are validated against known types
 3. **Size Verification**: Record sizes are included in the header
 4. **Sync Options**: Configuration option for immediate disk syncing after writes
 
 ### Error Recovery Mechanisms
 
-1. **Corrupted Record Detection**: Records with invalid CRCs or structure are detected
+1. **Corrupted Record Detection**: Records with invalid checksums or structure are detected
 2. **Partial Transaction Handling**: Options for dealing with incomplete transactions
 3. **Recovery Statistics**: Detailed statistics for auditing and debugging
 
