@@ -247,7 +247,7 @@ func SerializeNode(node *Node) ([]byte, error) {
 	}
 
 	// Write properties
-	if err := WriteStringMap(&buf, node.Properties); err != nil {
+	if err := node.SerializeProperties(&buf); err != nil {
 		return nil, err
 	}
 
@@ -287,14 +287,8 @@ func DeserializeNode(data []byte) (*Node, error) {
 	node := NewNode(id, label)
 
 	// Read properties
-	properties, err := ReadStringMap(buf)
-	if err != nil {
+	if err := node.DeserializeProperties(buf); err != nil {
 		return nil, err
-	}
-
-	// Add properties to node
-	for key, value := range properties {
-		node.AddProperty(key, value)
 	}
 
 	return node, nil
@@ -327,7 +321,7 @@ func SerializeEdge(edge *Edge) ([]byte, error) {
 	}
 
 	// Write properties
-	if err := WriteStringMap(&buf, edge.Properties); err != nil {
+	if err := edge.SerializeProperties(&buf); err != nil {
 		return nil, err
 	}
 
@@ -370,14 +364,8 @@ func DeserializeEdge(data []byte) (*Edge, error) {
 	edge := NewEdge(sourceID, targetID, label)
 
 	// Read properties
-	properties, err := ReadStringMap(buf)
-	if err != nil {
+	if err := edge.DeserializeProperties(buf); err != nil {
 		return nil, err
-	}
-
-	// Add properties to edge
-	for key, value := range properties {
-		edge.AddProperty(key, value)
 	}
 
 	return edge, nil

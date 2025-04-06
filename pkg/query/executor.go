@@ -338,7 +338,7 @@ func (e *Executor) executeEdgesByProperty(query *Query) (*Result, error) {
 		}
 		
 		// Check if this edge has the matching property
-		if propValue, ok := edge.Properties[propertyName]; ok && propValue == propertyValue {
+		if propValue, ok := edge.GetProperty(propertyName); ok && propValue == propertyValue {
 			result.Edges = append(result.Edges, edge)
 		}
 	}

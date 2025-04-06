@@ -77,13 +77,25 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 // addTestData adds some test nodes and edges to the indexes
 func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties storage.Index) {
 	// Create some nodes
-	nodes := []model.Node{
-		{ID: 1, Label: "Person", Properties: map[string]string{"name": "Alice", "age": "30"}},
-		{ID: 2, Label: "Person", Properties: map[string]string{"name": "Bob", "age": "25"}},
-		{ID: 3, Label: "Person", Properties: map[string]string{"name": "Charlie", "age": "35"}},
-		{ID: 4, Label: "Company", Properties: map[string]string{"name": "Acme Inc.", "founded": "2010"}},
-		{ID: 5, Label: "Company", Properties: map[string]string{"name": "TechCorp", "founded": "2015"}},
+	nodes := []*model.Node{
+		model.NewNode(1, "Person"),
+		model.NewNode(2, "Person"),
+		model.NewNode(3, "Person"),
+		model.NewNode(4, "Company"),
+		model.NewNode(5, "Company"),
 	}
+	
+	// Add properties to nodes
+	nodes[0].AddProperty("name", "Alice")
+	nodes[0].AddProperty("age", "30")
+	nodes[1].AddProperty("name", "Bob")
+	nodes[1].AddProperty("age", "25")
+	nodes[2].AddProperty("name", "Charlie")
+	nodes[2].AddProperty("age", "35")
+	nodes[3].AddProperty("name", "Acme Inc.")
+	nodes[3].AddProperty("founded", "2010")
+	nodes[4].AddProperty("name", "TechCorp")
+	nodes[4].AddProperty("founded", "2015")
 
 	// Create maps to collect all nodes by label
 	nodesByLabel := make(map[string][]uint64)
@@ -108,7 +120,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		}
 		
             // Add node properties to the property index
-            for propName, propValue := range node.Properties {
+            for propName, propValue := range node.GetProperties() {
                 // Create key in the format propertyName|propertyValue
                 propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
                 // The entityID (nodeID as string) becomes the value for the property index
@@ -133,14 +145,25 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 	}
 
 	// Create some edges
-	edges := []model.Edge{
-		{SourceID: 1, TargetID: 2, Label: "KNOWS", Properties: map[string]string{"since": "2018"}},
-		{SourceID: 1, TargetID: 3, Label: "KNOWS", Properties: map[string]string{"since": "2019"}},
-		{SourceID: 2, TargetID: 3, Label: "KNOWS", Properties: map[string]string{"since": "2020"}},
-		{SourceID: 1, TargetID: 4, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2015"}},
-		{SourceID: 2, TargetID: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Manager", "since": "2018"}},
-		{SourceID: 3, TargetID: 5, Label: "WORKS_AT", Properties: map[string]string{"role": "Developer", "since": "2016"}},
+	edges := []*model.Edge{
+		model.NewEdge(1, 2, "KNOWS"),
+		model.NewEdge(1, 3, "KNOWS"),
+		model.NewEdge(2, 3, "KNOWS"),
+		model.NewEdge(1, 4, "WORKS_AT"),
+		model.NewEdge(2, 5, "WORKS_AT"),
+		model.NewEdge(3, 5, "WORKS_AT"),
 	}
+	
+	// Add properties to edges
+	edges[0].AddProperty("since", "2018")
+	edges[1].AddProperty("since", "2019") 
+	edges[2].AddProperty("since", "2020")
+	edges[3].AddProperty("role", "Developer")
+	edges[3].AddProperty("since", "2015")
+	edges[4].AddProperty("role", "Manager")
+	edges[4].AddProperty("since", "2018")
+	edges[5].AddProperty("role", "Developer")
+	edges[5].AddProperty("since", "2016")
 
 	// Create maps to collect edges by label, outgoing, and incoming
 	edgesByLabel := make(map[string][]string)
@@ -174,8 +197,7 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 		}
 		
 		// Add edge properties to the property index
-            // Add edge properties to the property index
-            for propName, propValue := range edge.Properties {
+            for propName, propValue := range edge.GetProperties() {
                 // Create key in the format propertyName|propertyValue
                 propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
                 // The entityID (edgeID) becomes the value for the property index
@@ -592,8 +614,9 @@ func TestExecutor_PropertyQueries(t *testing.T) {
 					t.Errorf("Expected 2 edges, got %d", len(result.Edges))
 				}
 				for _, edge := range result.Edges {
-					if edge.Properties["role"] != "Developer" {
-						t.Errorf("Expected edge property 'role'='Developer', got '%s'", edge.Properties["role"])
+					value, exists := edge.GetProperty("role")
+					if !exists || value != "Developer" {
+						t.Errorf("Expected edge property 'role'='Developer', got '%s'", value)
 					}
 				}
 			},
@@ -613,8 +636,9 @@ func TestExecutor_PropertyQueries(t *testing.T) {
 					t.Errorf("Expected 2 edges, got %d", len(result.Edges))
 				}
 				for _, edge := range result.Edges {
-					if edge.Properties["since"] != "2018" {
-						t.Errorf("Expected edge property 'since'='2018', got '%s'", edge.Properties["since"])
+					value, exists := edge.GetProperty("since")
+					if !exists || value != "2018" {
+						t.Errorf("Expected edge property 'since'='2018', got '%s'", value)
 					}
 				}
 			},
