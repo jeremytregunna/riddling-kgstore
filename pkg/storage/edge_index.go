@@ -2,34 +2,19 @@ package storage
 
 import (
 	"fmt"
-	"sync"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
 // edgeIndex implements a primary index for Edge ID -> Edge data
 type edgeIndex struct {
-	mu        sync.RWMutex
-	storage   *StorageEngine
-	isOpen    bool
-	logger    model.Logger
-	keyPrefix []byte // Prefix for edge index keys
+	BaseIndex
 }
 
 // NewEdgeIndex creates a new primary index for edges
 func NewEdgeIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
-	if logger == nil {
-		logger = model.DefaultLoggerInstance
-	}
-
-	index := &edgeIndex{
-		storage:   storage,
-		isOpen:    true,
-		logger:    logger,
-		keyPrefix: []byte("e:"), // Prefix for edge index keys
-	}
-
-	return index, nil
+	base := NewBaseIndex(storage, logger, []byte("e:"), IndexTypeEdgePrimary)
+	return &edgeIndex{BaseIndex: base}, nil
 }
 
 // Put adds or updates an edge ID to edge data mapping
@@ -42,7 +27,7 @@ func (idx *edgeIndex) Put(edgeID, edgeData []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(edgeID)
+	key := idx.MakeKey(edgeID)
 
 	// Store in the underlying storage
 	err := idx.storage.Put(key, edgeData)
@@ -64,7 +49,7 @@ func (idx *edgeIndex) Get(edgeID []byte) ([]byte, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(edgeID)
+	key := idx.MakeKey(edgeID)
 
 	// Get from the underlying storage
 	data, err := idx.storage.Get(key)
@@ -98,7 +83,7 @@ func (idx *edgeIndex) Delete(edgeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(edgeID)
+	key := idx.MakeKey(edgeID)
 
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
@@ -125,7 +110,7 @@ func (idx *edgeIndex) Contains(edgeID []byte) (bool, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(edgeID)
+	key := idx.MakeKey(edgeID)
 
 	// Check in the underlying storage
 	exists, err := idx.storage.Contains(key)
@@ -136,44 +121,7 @@ func (idx *edgeIndex) Contains(edgeID []byte) (bool, error) {
 	return exists, nil
 }
 
-// Close closes the index
-func (idx *edgeIndex) Close() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return nil
-	}
-
-	idx.isOpen = false
-	idx.logger.Info("Closed edge primary index")
-	return nil
-}
-
-// Flush flushes the index to the underlying storage
-func (idx *edgeIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush edge index: %w", err)
-	}
-
-	idx.logger.Info("Flushed edge primary index")
-	return nil
-}
-
 // GetType returns the type of the index
 func (idx *edgeIndex) GetType() IndexType {
-	return IndexTypeEdgePrimary
-}
-
-// makeKey creates a key for the edge index with the prefix
-func (idx *edgeIndex) makeKey(edgeID []byte) []byte {
-	return append(idx.keyPrefix, edgeID...)
+	return idx.indexType
 }

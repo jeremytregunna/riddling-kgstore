@@ -10,6 +10,78 @@ import (
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
+// IndexCache is a generic cache for index results
+type IndexCache struct {
+	mu       sync.RWMutex
+	items    map[string][][]byte
+	maxSize  int
+	hitCount int
+	missCount int
+}
+
+// NewIndexCache creates a new cache for index results
+func NewIndexCache(maxSize int) *IndexCache {
+	return &IndexCache{
+		items:   make(map[string][][]byte),
+		maxSize: maxSize,
+	}
+}
+
+// Get retrieves cached IDs for a key
+func (c *IndexCache) Get(key []byte) ([][]byte, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	ids, ok := c.items[string(key)]
+	if ok {
+		c.hitCount++
+	} else {
+		c.missCount++
+	}
+	return ids, ok
+}
+
+// Put adds IDs for a key to the cache
+func (c *IndexCache) Put(key []byte, ids [][]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	// Simple eviction strategy if we reach max size
+	if len(c.items) >= c.maxSize {
+		// Remove a random item (we could implement LRU in the future)
+		for k := range c.items {
+			delete(c.items, k)
+			break
+		}
+	}
+	
+	c.items[string(key)] = ids
+}
+
+// Invalidate removes a key from the cache
+func (c *IndexCache) Invalidate(key []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	delete(c.items, string(key))
+}
+
+// Clear removes all items from the cache
+func (c *IndexCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.items = make(map[string][][]byte)
+}
+
+// GetStats returns cache statistics
+func (c *IndexCache) GetStats() (int, int, int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return len(c.items), c.hitCount, c.missCount
+}
+
 // Index errors
 var (
 	ErrIndexClosed = errors.New("index is closed")
@@ -65,29 +137,157 @@ type Index interface {
 	GetType() IndexType
 }
 
-// nodeIndex implements a primary index for Node ID -> Node data
-type nodeIndex struct {
+// BaseIndex implements common functionality for all indexes
+type BaseIndex struct {
 	mu        sync.RWMutex
 	storage   *StorageEngine
 	isOpen    bool
 	logger    model.Logger
-	keyPrefix []byte // Prefix for node index keys
+	keyPrefix []byte
+	indexType IndexType
 }
 
-// NewNodeIndex creates a new primary index for nodes
-func NewNodeIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
+// NewBaseIndex creates a new base index with common functionality
+func NewBaseIndex(storage *StorageEngine, logger model.Logger, prefix []byte, indexType IndexType) BaseIndex {
 	if logger == nil {
 		logger = model.DefaultLoggerInstance
 	}
 
-	index := &nodeIndex{
+	return BaseIndex{
 		storage:   storage,
 		isOpen:    true,
 		logger:    logger,
-		keyPrefix: []byte("n:"), // Prefix for node index keys
+		keyPrefix: prefix,
+		indexType: indexType,
+	}
+}
+
+// MakeKey creates a key with the index prefix
+func (idx *BaseIndex) MakeKey(key []byte) []byte {
+	result := make([]byte, 0, len(idx.keyPrefix)+len(key))
+	result = append(result, idx.keyPrefix...)
+	result = append(result, key...)
+	return result
+}
+
+// IsOpen returns whether the index is open
+func (idx *BaseIndex) IsOpen() bool {
+	return idx.isOpen
+}
+
+// GetIndexType returns the type of the index
+func (idx *BaseIndex) GetIndexType() IndexType {
+	return idx.indexType
+}
+
+// Close closes the index
+func (idx *BaseIndex) Close() error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if !idx.isOpen {
+		return nil
 	}
 
-	return index, nil
+	idx.isOpen = false
+	idx.logger.Info("Closed index of type %d", idx.indexType)
+	return nil
+}
+
+// Flush flushes the index to the underlying storage
+func (idx *BaseIndex) Flush() error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if !idx.isOpen {
+		return ErrIndexClosed
+	}
+
+	err := idx.storage.Flush()
+	if err != nil {
+		return fmt.Errorf("failed to flush index: %w", err)
+	}
+
+	idx.logger.Info("Flushed index of type %d", idx.indexType)
+	return nil
+}
+
+// SerializeIDs serializes a list of IDs using a standardized format
+// This can be used for node IDs, edge IDs, or other list serialization
+func SerializeIDs(ids [][]byte) ([]byte, error) {
+	// Calculate total size
+	totalSize := 4 // Count (uint32)
+	for _, id := range ids {
+		totalSize += 4 + len(id) // Length (uint32) + data
+	}
+
+	// Create buffer
+	buf := make([]byte, totalSize)
+	offset := 0
+
+	// Write count
+	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(ids)))
+	offset += 4
+
+	// Write IDs
+	for _, id := range ids {
+		// Write length
+		binary.LittleEndian.PutUint32(buf[offset:], uint32(len(id)))
+		offset += 4
+
+		// Write data
+		copy(buf[offset:], id)
+		offset += len(id)
+	}
+
+	return buf, nil
+}
+
+// DeserializeIDs deserializes a list of IDs using the standardized format
+func DeserializeIDs(data []byte) ([][]byte, error) {
+	if len(data) < 4 {
+		return nil, errors.New("invalid ID list data: too short")
+	}
+
+	// Read count
+	count := binary.LittleEndian.Uint32(data[0:4])
+	offset := 4
+
+	// Read IDs
+	ids := make([][]byte, 0, count)
+	for i := uint32(0); i < count; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid ID list data: truncated length field")
+		}
+
+		// Read length
+		length := binary.LittleEndian.Uint32(data[offset:])
+		offset += 4
+
+		if offset+int(length) > len(data) {
+			return nil, errors.New("invalid ID list data: truncated content")
+		}
+
+		// Read data
+		id := make([]byte, length)
+		copy(id, data[offset:offset+int(length)])
+		offset += int(length)
+
+		ids = append(ids, id)
+	}
+
+	return ids, nil
+}
+
+// nodeIndex implements a primary index for Node ID -> Node data
+type nodeIndex struct {
+	BaseIndex
+}
+
+// NewNodeIndex creates a new primary index for nodes
+func NewNodeIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
+	base := NewBaseIndex(storage, logger, []byte("n:"), IndexTypeNodePrimary)
+	return &nodeIndex{BaseIndex: base}, nil
 }
 
 // Put adds or updates a node ID to node data mapping
@@ -100,7 +300,7 @@ func (idx *nodeIndex) Put(nodeID, nodeData []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(nodeID)
+	key := idx.MakeKey(nodeID)
 
 	// Store in the underlying storage
 	err := idx.storage.Put(key, nodeData)
@@ -122,7 +322,7 @@ func (idx *nodeIndex) Get(nodeID []byte) ([]byte, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(nodeID)
+	key := idx.MakeKey(nodeID)
 
 	// Get from the underlying storage
 	data, err := idx.storage.Get(key)
@@ -156,7 +356,7 @@ func (idx *nodeIndex) Delete(nodeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(nodeID)
+	key := idx.MakeKey(nodeID)
 
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
@@ -183,7 +383,7 @@ func (idx *nodeIndex) Contains(nodeID []byte) (bool, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(nodeID)
+	key := idx.MakeKey(nodeID)
 
 	// Check in the underlying storage
 	exists, err := idx.storage.Contains(key)
@@ -194,55 +394,14 @@ func (idx *nodeIndex) Contains(nodeID []byte) (bool, error) {
 	return exists, nil
 }
 
-// Close closes the index
-func (idx *nodeIndex) Close() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return nil
-	}
-
-	idx.isOpen = false
-	idx.logger.Info("Closed node primary index")
-	return nil
-}
-
-// Flush flushes the index to the underlying storage
-func (idx *nodeIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush node index: %w", err)
-	}
-
-	idx.logger.Info("Flushed node primary index")
-	return nil
-}
-
 // GetType returns the type of the index
 func (idx *nodeIndex) GetType() IndexType {
-	return IndexTypeNodePrimary
-}
-
-// makeKey creates a key for the node index with the prefix
-func (idx *nodeIndex) makeKey(nodeID []byte) []byte {
-	return append(idx.keyPrefix, nodeID...)
+	return idx.indexType
 }
 
 // nodeLabelIndex implements a secondary index for Node Label -> List of Node IDs
 type nodeLabelIndex struct {
-	mu        sync.RWMutex
-	storage   *StorageEngine
-	isOpen    bool
-	logger    model.Logger
-	keyPrefix []byte // Prefix for node label index keys
+	BaseIndex
 }
 
 // NewNodeLabelIndex creates a new secondary index for node labels
@@ -257,15 +416,8 @@ func NewNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, erro
 		return NewLSMNodeLabelIndex(storage, logger)
 	}
 	
-	// Otherwise use the original implementation
-	index := &nodeLabelIndex{
-		storage:   storage,
-		isOpen:    true,
-		logger:    logger,
-		keyPrefix: []byte("nl:"), // Prefix for node label index keys
-	}
-
-	return index, nil
+	base := NewBaseIndex(storage, logger, []byte("nl:"), IndexTypeNodeLabel)
+	return &nodeLabelIndex{BaseIndex: base}, nil
 }
 
 // Put adds a node ID to a label's list
@@ -278,7 +430,7 @@ func (idx *nodeLabelIndex) Put(label, nodeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the current list of node IDs for this label
 	nodeIDs, err := idx.getNodeIDsLocked(key)
@@ -303,7 +455,7 @@ func (idx *nodeLabelIndex) Put(label, nodeID []byte) error {
 	}
 
 	// Serialize the list of node IDs
-	data, err := idx.serializeNodeIDs(nodeIDs)
+	data, err := SerializeIDs(nodeIDs)
 	if err != nil {
 		return fmt.Errorf("failed to serialize node IDs: %w", err)
 	}
@@ -342,7 +494,7 @@ func (idx *nodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the node IDs from the storage
 	nodeIDs, err := idx.getNodeIDsLocked(key)
@@ -366,7 +518,7 @@ func (idx *nodeLabelIndex) Delete(label []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
@@ -388,7 +540,7 @@ func (idx *nodeLabelIndex) DeleteValue(label, nodeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the current list of node IDs for this label
 	nodeIDs, err := idx.getNodeIDsLocked(key)
@@ -422,7 +574,7 @@ func (idx *nodeLabelIndex) DeleteValue(label, nodeID []byte) error {
 		}
 	} else {
 		// Serialize the updated list of node IDs
-		data, err := idx.serializeNodeIDs(newNodeIDs)
+		data, err := SerializeIDs(newNodeIDs)
 		if err != nil {
 			return fmt.Errorf("failed to serialize node IDs: %w", err)
 		}
@@ -448,7 +600,7 @@ func (idx *nodeLabelIndex) Contains(label []byte) (bool, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Check in the underlying storage
 	exists, err := idx.storage.Contains(key)
@@ -459,46 +611,9 @@ func (idx *nodeLabelIndex) Contains(label []byte) (bool, error) {
 	return exists, nil
 }
 
-// Close closes the index
-func (idx *nodeLabelIndex) Close() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return nil
-	}
-
-	idx.isOpen = false
-	idx.logger.Info("Closed node label index")
-	return nil
-}
-
-// Flush flushes the index to the underlying storage
-func (idx *nodeLabelIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush node label index: %w", err)
-	}
-
-	idx.logger.Info("Flushed node label index")
-	return nil
-}
-
 // GetType returns the type of the index
 func (idx *nodeLabelIndex) GetType() IndexType {
-	return IndexTypeNodeLabel
-}
-
-// makeKey creates a key for the node label index with the prefix
-func (idx *nodeLabelIndex) makeKey(label []byte) []byte {
-	return append(idx.keyPrefix, label...)
+	return idx.indexType
 }
 
 // getNodeIDsLocked retrieves the list of node IDs for a label
@@ -510,98 +625,18 @@ func (idx *nodeLabelIndex) getNodeIDsLocked(key []byte) ([][]byte, error) {
 	}
 
 	// Deserialize the list of node IDs
-	return idx.deserializeNodeIDs(data)
-}
-
-// serializeNodeIDs serializes a list of node IDs
-func (idx *nodeLabelIndex) serializeNodeIDs(nodeIDs [][]byte) ([]byte, error) {
-	// Calculate total size
-	totalSize := 4 // Count (uint32)
-	for _, id := range nodeIDs {
-		totalSize += 4 + len(id) // Length (uint32) + data
-	}
-
-	// Create buffer
-	buf := make([]byte, totalSize)
-	offset := 0
-
-	// Write count
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(nodeIDs)))
-	offset += 4
-
-	// Write node IDs
-	for _, id := range nodeIDs {
-		// Write length
-		binary.LittleEndian.PutUint32(buf[offset:], uint32(len(id)))
-		offset += 4
-
-		// Write data
-		copy(buf[offset:], id)
-		offset += len(id)
-	}
-
-	return buf, nil
-}
-
-// deserializeNodeIDs deserializes a list of node IDs
-func (idx *nodeLabelIndex) deserializeNodeIDs(data []byte) ([][]byte, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid node IDs data")
-	}
-
-	// Read count
-	count := binary.LittleEndian.Uint32(data[0:4])
-	offset := 4
-
-	// Read node IDs
-	nodeIDs := make([][]byte, 0, count)
-	for i := uint32(0); i < count; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid node IDs data")
-		}
-
-		// Read length
-		length := binary.LittleEndian.Uint32(data[offset:])
-		offset += 4
-
-		if offset+int(length) > len(data) {
-			return nil, errors.New("invalid node IDs data")
-		}
-
-		// Read data
-		id := make([]byte, length)
-		copy(id, data[offset:offset+int(length)])
-		offset += int(length)
-
-		nodeIDs = append(nodeIDs, id)
-	}
-
-	return nodeIDs, nil
+	return DeserializeIDs(data)
 }
 
 // edgeLabelIndex implements a secondary index for Edge Label -> List of Edge IDs
 type edgeLabelIndex struct {
-	mu        sync.RWMutex
-	storage   *StorageEngine
-	isOpen    bool
-	logger    model.Logger
-	keyPrefix []byte // Prefix for edge label index keys
+	BaseIndex
 }
 
 // NewEdgeLabelIndex creates a new secondary index for edge labels
 func NewEdgeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
-	if logger == nil {
-		logger = model.DefaultLoggerInstance
-	}
-
-	index := &edgeLabelIndex{
-		storage:   storage,
-		isOpen:    true,
-		logger:    logger,
-		keyPrefix: []byte("el:"), // Prefix for edge label index keys
-	}
-
-	return index, nil
+	base := NewBaseIndex(storage, logger, []byte("el:"), IndexTypeEdgeLabel)
+	return &edgeLabelIndex{BaseIndex: base}, nil
 }
 
 // Put adds an edge ID to a label's list
@@ -615,7 +650,7 @@ func (idx *edgeLabelIndex) Put(label, edgeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the current list of edge IDs for this label
 	edgeIDs, err := idx.getEdgeIDsLocked(key)
@@ -640,7 +675,7 @@ func (idx *edgeLabelIndex) Put(label, edgeID []byte) error {
 	}
 
 	// Serialize the list of edge IDs
-	data, err := idx.serializeEdgeIDs(edgeIDs)
+	data, err := SerializeIDs(edgeIDs)
 	if err != nil {
 		return fmt.Errorf("failed to serialize edge IDs: %w", err)
 	}
@@ -679,7 +714,7 @@ func (idx *edgeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the edge IDs from the storage
 	edgeIDs, err := idx.getEdgeIDsLocked(key)
@@ -703,7 +738,7 @@ func (idx *edgeLabelIndex) Delete(label []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
@@ -725,7 +760,7 @@ func (idx *edgeLabelIndex) DeleteValue(label, edgeID []byte) error {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Get the current list of edge IDs for this label
 	edgeIDs, err := idx.getEdgeIDsLocked(key)
@@ -759,7 +794,7 @@ func (idx *edgeLabelIndex) DeleteValue(label, edgeID []byte) error {
 		}
 	} else {
 		// Serialize the updated list of edge IDs
-		data, err := idx.serializeEdgeIDs(newEdgeIDs)
+		data, err := SerializeIDs(newEdgeIDs)
 		if err != nil {
 			return fmt.Errorf("failed to serialize edge IDs: %w", err)
 		}
@@ -785,7 +820,7 @@ func (idx *edgeLabelIndex) Contains(label []byte) (bool, error) {
 	}
 
 	// Create a key with the prefix
-	key := idx.makeKey(label)
+	key := idx.MakeKey(label)
 
 	// Check in the underlying storage
 	exists, err := idx.storage.Contains(key)
@@ -796,46 +831,9 @@ func (idx *edgeLabelIndex) Contains(label []byte) (bool, error) {
 	return exists, nil
 }
 
-// Close closes the index
-func (idx *edgeLabelIndex) Close() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return nil
-	}
-
-	idx.isOpen = false
-	idx.logger.Info("Closed edge label index")
-	return nil
-}
-
-// Flush flushes the index to the underlying storage
-func (idx *edgeLabelIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush edge label index: %w", err)
-	}
-
-	idx.logger.Info("Flushed edge label index")
-	return nil
-}
-
 // GetType returns the type of the index
 func (idx *edgeLabelIndex) GetType() IndexType {
-	return IndexTypeEdgeLabel
-}
-
-// makeKey creates a key for the edge label index with the prefix
-func (idx *edgeLabelIndex) makeKey(label []byte) []byte {
-	return append(idx.keyPrefix, label...)
+	return idx.indexType
 }
 
 // getEdgeIDsLocked retrieves the list of edge IDs for a label
@@ -847,71 +845,5 @@ func (idx *edgeLabelIndex) getEdgeIDsLocked(key []byte) ([][]byte, error) {
 	}
 
 	// Deserialize the list of edge IDs
-	return idx.deserializeEdgeIDs(data)
-}
-
-// serializeEdgeIDs serializes a list of edge IDs
-func (idx *edgeLabelIndex) serializeEdgeIDs(edgeIDs [][]byte) ([]byte, error) {
-	// Calculate total size
-	totalSize := 4 // Count (uint32)
-	for _, id := range edgeIDs {
-		totalSize += 4 + len(id) // Length (uint32) + data
-	}
-
-	// Create buffer
-	buf := make([]byte, totalSize)
-	offset := 0
-
-	// Write count
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(edgeIDs)))
-	offset += 4
-
-	// Write edge IDs
-	for _, id := range edgeIDs {
-		// Write length
-		binary.LittleEndian.PutUint32(buf[offset:], uint32(len(id)))
-		offset += 4
-
-		// Write data
-		copy(buf[offset:], id)
-		offset += len(id)
-	}
-
-	return buf, nil
-}
-
-// deserializeEdgeIDs deserializes a list of edge IDs
-func (idx *edgeLabelIndex) deserializeEdgeIDs(data []byte) ([][]byte, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid edge IDs data")
-	}
-
-	// Read count
-	count := binary.LittleEndian.Uint32(data[0:4])
-	offset := 4
-
-	// Read edge IDs
-	edgeIDs := make([][]byte, 0, count)
-	for i := uint32(0); i < count; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid edge IDs data")
-		}
-
-		// Read length
-		length := binary.LittleEndian.Uint32(data[offset:])
-		offset += 4
-
-		if offset+int(length) > len(data) {
-			return nil, errors.New("invalid edge IDs data")
-		}
-
-		// Read data
-		id := make([]byte, length)
-		copy(id, data[offset:offset+int(length)])
-		offset += int(length)
-
-		edgeIDs = append(edgeIDs, id)
-	}
-
-	return edgeIDs, nil
+	return DeserializeIDs(data)
 }

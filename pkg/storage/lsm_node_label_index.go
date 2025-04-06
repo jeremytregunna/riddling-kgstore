@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"sync"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
@@ -12,93 +11,25 @@ import (
 // lsmNodeLabelIndex implements a secondary index for Node Label -> List of Node IDs
 // using an LSM-tree based structure for better performance
 type lsmNodeLabelIndex struct {
-	mu        sync.RWMutex
-	storage   *StorageEngine
-	isOpen    bool
-	logger    model.Logger
-	keyPrefix []byte // Prefix for node label index keys
-	cache     *labelCache
-}
-
-// labelCache is a simple in-memory cache for frequently accessed labels
-type labelCache struct {
-	mu    sync.RWMutex
-	items map[string][][]byte
-	size int
-	maxSize int
-}
-
-// newLabelCache creates a new cache for label index results
-func newLabelCache(maxSize int) *labelCache {
-	return &labelCache{
-		items:   make(map[string][][]byte),
-		size:    0,
-		maxSize: maxSize,
-	}
-}
-
-// get retrieves cached node IDs for a label
-func (c *labelCache) get(label []byte) ([][]byte, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	ids, ok := c.items[string(label)]
-	return ids, ok
-}
-
-// put adds node IDs for a label to the cache
-func (c *labelCache) put(label []byte, nodeIDs [][]byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	// Simple eviction strategy if we reach max size
-	if len(c.items) >= c.maxSize {
-		// Remove a random item (we could implement LRU in the future)
-		for k := range c.items {
-			delete(c.items, k)
-			break
-		}
-	}
-	
-	c.items[string(label)] = nodeIDs
-}
-
-// invalidate removes a label from the cache
-func (c *labelCache) invalidate(label []byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	delete(c.items, string(label))
-}
-
-// clear removes all items from the cache
-func (c *labelCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.items = make(map[string][][]byte)
+	BaseIndex
+	cache *IndexCache
 }
 
 // NewLSMNodeLabelIndex creates a new LSM-tree based secondary index for node labels
 func NewLSMNodeLabelIndex(storage *StorageEngine, logger model.Logger) (Index, error) {
-	if logger == nil {
-		logger = model.DefaultLoggerInstance
-	}
-
+	base := NewBaseIndex(storage, logger, []byte("nl:"), IndexTypeNodeLabel)
+	
 	index := &lsmNodeLabelIndex{
-		storage:   storage,
-		isOpen:    true,
-		logger:    logger,
-		keyPrefix: []byte("nl:"), // Prefix for node label index keys
-		cache:     newLabelCache(1000), // Cache up to 1000 labels
+		BaseIndex: base,
+		cache:     NewIndexCache(1000), // Cache up to 1000 labels
 	}
 
 	return index, nil
 }
 
-// makeKey creates a composite key for the node label index in format nl:{label}:{nodeID}
+// makeCompositeKey creates a composite key for the node label index in format nl:{label}:{nodeID}
 // This enables efficient range scans by label
-func (idx *lsmNodeLabelIndex) makeKey(label, nodeID []byte) []byte {
+func (idx *lsmNodeLabelIndex) makeCompositeKey(label, nodeID []byte) []byte {
 	// Create a composite key: nl:{label}:{nodeID}
 	// This allows for range scans by label prefix
 	key := make([]byte, 0, len(idx.keyPrefix)+len(label)+1+len(nodeID))
@@ -141,7 +72,7 @@ func (idx *lsmNodeLabelIndex) Put(label, nodeID []byte) error {
 	}
 
 	// Create a composite key
-	key := idx.makeKey(label, nodeID)
+	key := idx.makeCompositeKey(label, nodeID)
 
 	// Store a simple marker value (1 byte) - the actual data is in the key
 	marker := []byte{1}
@@ -153,7 +84,7 @@ func (idx *lsmNodeLabelIndex) Put(label, nodeID []byte) error {
 	}
 
 	// Invalidate cache for this label
-	idx.cache.invalidate(label)
+	idx.cache.Invalidate(label)
 
 	idx.logger.Debug("Added node ID %s to label %s index using LSM structure", nodeID, label)
 	return nil
@@ -176,7 +107,6 @@ func (idx *lsmNodeLabelIndex) Get(label []byte) ([]byte, error) {
 // scanKeysWithPrefix scans all keys with a specific prefix and extracts the node IDs
 func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error) {
 	// Implementation using prefix-based iteration through the underlying storage
-	// We'll need to modify the iterator implementation in the storage engine for this
 	result := make([][]byte, 0)
 	
 	// First check the current MemTable
@@ -211,7 +141,6 @@ func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error
 // scanMemTableWithPrefix scans a MemTable for keys with a specific prefix
 func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable MemTableInterface, prefix []byte) ([][]byte, error) {
 	// This implementation assumes we can iterate through the MemTable
-	// For now, let's use a simple approach by getting all entries and filtering
 	result := make([][]byte, 0)
 	
 	// For MemTable, use the GetEntries method and filter by prefix
@@ -315,7 +244,7 @@ func (idx *lsmNodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 	}
 
 	// Check cache first
-	if cached, ok := idx.cache.get(label); ok {
+	if cached, ok := idx.cache.Get(label); ok {
 		return cached, nil
 	}
 
@@ -329,7 +258,7 @@ func (idx *lsmNodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 	}
 	
 	// Cache the results
-	idx.cache.put(label, nodeIDs)
+	idx.cache.Put(label, nodeIDs)
 
 	return nodeIDs, nil
 }
@@ -352,7 +281,7 @@ func (idx *lsmNodeLabelIndex) Delete(label []byte) error {
 	
 	// Delete each node ID entry
 	for _, nodeID := range nodeIDs {
-		key := idx.makeKey(label, nodeID)
+		key := idx.makeCompositeKey(label, nodeID)
 		err := idx.storage.Delete(key)
 		if err != nil {
 			return fmt.Errorf("failed to delete node label index entry: %w", err)
@@ -360,7 +289,7 @@ func (idx *lsmNodeLabelIndex) Delete(label []byte) error {
 	}
 
 	// Invalidate cache
-	idx.cache.invalidate(label)
+	idx.cache.Invalidate(label)
 
 	idx.logger.Debug("Deleted %d node IDs for label %s from index", len(nodeIDs), label)
 	return nil
@@ -376,7 +305,7 @@ func (idx *lsmNodeLabelIndex) DeleteValue(label, nodeID []byte) error {
 	}
 
 	// Create the composite key
-	key := idx.makeKey(label, nodeID)
+	key := idx.makeCompositeKey(label, nodeID)
 	
 	// Delete from the underlying storage
 	err := idx.storage.Delete(key)
@@ -385,7 +314,7 @@ func (idx *lsmNodeLabelIndex) DeleteValue(label, nodeID []byte) error {
 	}
 
 	// Invalidate cache
-	idx.cache.invalidate(label)
+	idx.cache.Invalidate(label)
 
 	idx.logger.Debug("Removed node ID %s from label %s index", nodeID, label)
 	return nil
@@ -401,7 +330,7 @@ func (idx *lsmNodeLabelIndex) Contains(label []byte) (bool, error) {
 	}
 
 	// Check cache first for performance
-	if cached, ok := idx.cache.get(label); ok {
+	if cached, ok := idx.cache.Get(label); ok {
 		return len(cached) > 0, nil
 	}
 
@@ -459,30 +388,17 @@ func (idx *lsmNodeLabelIndex) Close() error {
 	}
 
 	idx.isOpen = false
-	idx.cache.clear()
+	idx.cache.Clear()
 	idx.logger.Info("Closed LSM-based node label index")
 	return nil
 }
 
 // Flush flushes the index to the underlying storage
 func (idx *lsmNodeLabelIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush LSM-based node label index: %w", err)
-	}
-
-	idx.logger.Info("Flushed LSM-based node label index")
-	return nil
+	return idx.BaseIndex.Flush()
 }
 
 // GetType returns the type of the index
 func (idx *lsmNodeLabelIndex) GetType() IndexType {
-	return IndexTypeNodeLabel
+	return idx.indexType
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
@@ -33,80 +32,10 @@ const (
 // propertyIndex implements a specialized SSTable format for indexing property values
 // It follows an LSM-tree based structure similar to the node label index
 type propertyIndex struct {
-	mu             sync.RWMutex
-	storage        *StorageEngine
-	isOpen         bool
-	logger         model.Logger
-	keyPrefix      []byte // Base prefix for property index keys (p:)
+	BaseIndex
 	entityType     PropertyIndexType
-	cache          *propertyCache
+	cache          *IndexCache
 	fullTextSearch bool // Whether to enable full-text search capabilities
-}
-
-// propertyCache is a simple in-memory cache for frequently accessed property queries
-type propertyCache struct {
-	mu       sync.RWMutex
-	items    map[string][][]byte
-	size     int
-	maxSize  int
-	hitCount int
-	missCount int
-}
-
-// newPropertyCache creates a new cache for property index results
-func newPropertyCache(maxSize int) *propertyCache {
-	return &propertyCache{
-		items:   make(map[string][][]byte),
-		size:    0,
-		maxSize: maxSize,
-	}
-}
-
-// get retrieves cached entity IDs for a property query
-func (c *propertyCache) get(cacheKey []byte) ([][]byte, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	ids, ok := c.items[string(cacheKey)]
-	if ok {
-		c.hitCount++
-	} else {
-		c.missCount++
-	}
-	return ids, ok
-}
-
-// put adds entity IDs for a property query to the cache
-func (c *propertyCache) put(cacheKey []byte, entityIDs [][]byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	// Simple eviction strategy if we reach max size
-	if len(c.items) >= c.maxSize {
-		// Remove a random item (we could implement LRU in the future)
-		for k := range c.items {
-			delete(c.items, k)
-			break
-		}
-	}
-	
-	c.items[string(cacheKey)] = entityIDs
-}
-
-// invalidate removes a cache entry
-func (c *propertyCache) invalidate(cacheKey []byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	delete(c.items, string(cacheKey))
-}
-
-// clear removes all items from the cache
-func (c *propertyCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.items = make(map[string][][]byte)
 }
 
 // NewNodePropertyIndex creates a new property index for node properties
@@ -126,10 +55,6 @@ func NewFullTextPropertyIndex(storage *StorageEngine, logger model.Logger, entit
 
 // newPropertyIndex creates a new property index with the specified configuration
 func newPropertyIndex(storage *StorageEngine, logger model.Logger, entityType PropertyIndexType, fullTextSearch bool) (Index, error) {
-	if logger == nil {
-		logger = model.DefaultLoggerInstance
-	}
-
 	var entityPrefix string
 	if entityType == PropertyIndexTypeNode {
 		entityPrefix = "np"
@@ -137,13 +62,13 @@ func newPropertyIndex(storage *StorageEngine, logger model.Logger, entityType Pr
 		entityPrefix = "ep"
 	}
 
+	// Create the base index
+	base := NewBaseIndex(storage, logger, []byte(entityPrefix + ":"), IndexTypePropertyValue)
+
 	index := &propertyIndex{
-		storage:        storage,
-		isOpen:         true,
-		logger:         logger,
-		keyPrefix:      []byte(entityPrefix + ":"), // e.g., "np:" for node properties, "ep:" for edge properties
+		BaseIndex:      base,
 		entityType:     entityType,
-		cache:          newPropertyCache(1000), // Cache up to 1000 property queries
+		cache:          NewIndexCache(1000), // Cache up to 1000 property queries
 		fullTextSearch: fullTextSearch,
 	}
 
@@ -262,8 +187,8 @@ func (idx *propertyIndex) Put(key, value []byte) error {
 	}
 
 	// Invalidate cache for this property
-	idx.cache.invalidate(idx.makePropertyPrefix(propertyName))
-	idx.cache.invalidate(idx.makePropertyValuePrefix(propertyName, propertyValue, valueType))
+	idx.cache.Invalidate(idx.makePropertyPrefix(propertyName))
+	idx.cache.Invalidate(idx.makePropertyValuePrefix(propertyName, propertyValue, valueType))
 
 	idx.logger.Debug("Added entity ID %s to property index for %s=%s", entityID, propertyName, propertyValue)
 	return nil
@@ -308,7 +233,7 @@ func (idx *propertyIndex) getEntitiesByPropertyValue(propertyName, propertyValue
 	prefix := idx.makePropertyValuePrefix(propertyName, propertyValue, valueType)
 	
 	// Check cache first for this specific query
-	if cached, ok := idx.cache.get(prefix); ok {
+	if cached, ok := idx.cache.Get(prefix); ok {
 		return cached, nil
 	}
 	
@@ -319,7 +244,7 @@ func (idx *propertyIndex) getEntitiesByPropertyValue(propertyName, propertyValue
 	}
 	
 	// Cache the results
-	idx.cache.put(prefix, entityIDs)
+	idx.cache.Put(prefix, entityIDs)
 
 	return entityIDs, nil
 }
@@ -352,7 +277,7 @@ func (idx *propertyIndex) GetAll(key []byte) ([][]byte, error) {
 	
 	// Check cache first
 	prefix := idx.makePropertyPrefix(propertyName)
-	if cached, ok := idx.cache.get(prefix); ok {
+	if cached, ok := idx.cache.Get(prefix); ok {
 		return cached, nil
 	}
 	
@@ -363,7 +288,7 @@ func (idx *propertyIndex) GetAll(key []byte) ([][]byte, error) {
 	}
 	
 	// Cache the results
-	idx.cache.put(prefix, entityIDs)
+	idx.cache.Put(prefix, entityIDs)
 
 	return entityIDs, nil
 }
@@ -578,7 +503,7 @@ func (idx *propertyIndex) deleteByPrefix(prefix []byte) error {
 	}
 	
 	// Invalidate cache for this prefix
-	idx.cache.invalidate(prefix)
+	idx.cache.Invalidate(prefix)
 	
 	idx.logger.Debug("Deleted %d entity IDs for property index with prefix %s", len(entityIDs), prefix)
 	return nil
@@ -681,8 +606,8 @@ func (idx *propertyIndex) DeleteValue(key, entityID []byte) error {
 			}
 			
 			// Invalidate cache
-			idx.cache.invalidate(idx.makePropertyPrefix(propertyName))
-			idx.cache.invalidate(idx.makePropertyValuePrefix(propertyName, propertyValue, valueType))
+			idx.cache.Invalidate(idx.makePropertyPrefix(propertyName))
+			idx.cache.Invalidate(idx.makePropertyValuePrefix(propertyName, propertyValue, valueType))
 			
 			idx.logger.Debug("Removed entity ID %s from property %s=%s index", entityID, propertyName, propertyValue)
 			return nil
@@ -740,7 +665,7 @@ func (idx *propertyIndex) Contains(key []byte) (bool, error) {
 // containsWithPrefix checks if any key with the given prefix exists
 func (idx *propertyIndex) containsWithPrefix(prefix []byte) (bool, error) {
 	// Check cache first for performance
-	if cached, ok := idx.cache.get(prefix); ok {
+	if cached, ok := idx.cache.Get(prefix); ok {
 		return len(cached) > 0, nil
 	}
 	
@@ -795,30 +720,17 @@ func (idx *propertyIndex) Close() error {
 	}
 
 	idx.isOpen = false
-	idx.cache.clear()
+	idx.cache.Clear()
 	idx.logger.Info("Closed property index")
 	return nil
 }
 
 // Flush flushes the index to the underlying storage
 func (idx *propertyIndex) Flush() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if !idx.isOpen {
-		return ErrIndexClosed
-	}
-
-	err := idx.storage.Flush()
-	if err != nil {
-		return fmt.Errorf("failed to flush property index: %w", err)
-	}
-
-	idx.logger.Info("Flushed property index")
-	return nil
+	return idx.BaseIndex.Flush()
 }
 
 // GetType returns the type of the index
 func (idx *propertyIndex) GetType() IndexType {
-	return IndexTypePropertyValue
+	return idx.indexType
 }

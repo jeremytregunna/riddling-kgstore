@@ -20,21 +20,21 @@ var (
 // StorageEngine is the main interface to the storage system
 // It manages the MemTable, SSTables, and WAL to provide a durable key-value store
 type StorageEngine struct {
-	mu                  sync.RWMutex
-	config              EngineConfig
-	memTable            MemTableInterface   // Current MemTable for writes - can be standard or lock-free
-	immMemTables        []MemTableInterface // Immutable MemTables waiting to be flushed
-	sstables            []*SSTable          // Sorted String Tables (persistent storage)
-	wal                 *WAL                // Write-Ahead Log
-	logger              model.Logger        // Logger for storage engine operations
-	compactionCond      *sync.Cond          // Condition variable for signaling compaction
-	compactionDone      chan struct{}       // Channel for signaling compaction is done
-	isOpen              bool                // Whether the storage engine is open
-	nextSSTableID       uint64              // Next SSTable ID to use
-	leveledCompactor    *LeveledCompaction  // Manages the leveled compaction strategy
-	txManager           *TransactionManager // Transaction manager for atomic operations
-	useLSMNodeLabelIndex bool               // Whether to use LSM-tree based node label index
-	usePropertyIndex    bool                // Whether to use specialized property index
+	mu                   sync.RWMutex
+	config               EngineConfig
+	memTable             MemTableInterface   // Current MemTable for writes - can be standard or lock-free
+	immMemTables         []MemTableInterface // Immutable MemTables waiting to be flushed
+	sstables             []*SSTable          // Sorted String Tables (persistent storage)
+	wal                  *WAL                // Write-Ahead Log
+	logger               model.Logger        // Logger for storage engine operations
+	compactionCond       *sync.Cond          // Condition variable for signaling compaction
+	compactionDone       chan struct{}       // Channel for signaling compaction is done
+	isOpen               bool                // Whether the storage engine is open
+	nextSSTableID        uint64              // Next SSTable ID to use
+	leveledCompactor     *LeveledCompaction  // Manages the leveled compaction strategy
+	txManager            *TransactionManager // Transaction manager for atomic operations
+	useLSMNodeLabelIndex bool                // Whether to use LSM-tree based node label index
+	usePropertyIndex     bool                // Whether to use specialized property index
 
 	// Two-phase deletion mechanism for safe SSTable removal
 	deletionMu       sync.Mutex           // Mutex for deletion operations (separate from main engine lock)
@@ -71,7 +71,7 @@ type EngineConfig struct {
 
 	// Use LSM-tree based node label index for better performance
 	UseLSMNodeLabelIndex bool
-	
+
 	// Use specialized SSTable format for property indexing
 	UsePropertyIndex bool
 
@@ -167,22 +167,22 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 
 	// Create the storage engine
 	engine := &StorageEngine{
-		config:           config,
-		memTable:         memTable,
-		immMemTables:     make([]MemTableInterface, 0),
-		sstables:         make([]*SSTable, 0),
-		wal:              wal,
-		logger:           config.Logger,
-		compactionDone:   make(chan struct{}),
-		isOpen:           true,
-		nextSSTableID:    1,
-		leveledCompactor: NewLeveledCompaction(),
-		txManager:        txManager,
-		pendingDeletions: make(map[uint64]*SSTable),
-		deletionTime:     make(map[uint64]time.Time),
-		deletionExit:     make(chan struct{}),
+		config:               config,
+		memTable:             memTable,
+		immMemTables:         make([]MemTableInterface, 0),
+		sstables:             make([]*SSTable, 0),
+		wal:                  wal,
+		logger:               config.Logger,
+		compactionDone:       make(chan struct{}),
+		isOpen:               true,
+		nextSSTableID:        1,
+		leveledCompactor:     NewLeveledCompaction(),
+		txManager:            txManager,
+		pendingDeletions:     make(map[uint64]*SSTable),
+		deletionTime:         make(map[uint64]time.Time),
+		deletionExit:         make(chan struct{}),
 		useLSMNodeLabelIndex: config.UseLSMNodeLabelIndex,
-		usePropertyIndex: config.UsePropertyIndex,
+		usePropertyIndex:     config.UsePropertyIndex,
 	}
 
 	// Set up the condition variable for compaction
@@ -211,7 +211,7 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 
 		// Simple implementation to populate the MemTable
 		opts := DefaultReplayOptions()
-		stats, err := EnhancedReplayToInterface(wal, memTable, opts)
+		stats, err := wal.ReplayToInterface(memTable, opts)
 		if err != nil {
 			wal.Close()
 			return nil, fmt.Errorf("failed to replay WAL to lock-free MemTable: %w", err)

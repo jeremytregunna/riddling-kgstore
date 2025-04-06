@@ -1133,6 +1133,290 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 	return record, nil
 }
 
+// ReplayToInterface replays WAL records to any MemTableInterface implementation
+func (w *WAL) ReplayToInterface(memTable MemTableInterface, options ReplayOptions) (ReplayStats, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.isOpen {
+		return ReplayStats{}, ErrWALClosed
+	}
+
+	// Prepare statistics tracking
+	stats := ReplayStats{
+		StartTime:       time.Now(),
+		RecordCount:     0,
+		AppliedCount:    0,
+		CorruptedCount:  0,
+		TxBeginCount:    0,
+		TxCommitCount:   0,
+		TxRollbackCount: 0,
+		SkippedTxCount:  0,
+	}
+
+	// First, check the version to determine header size
+	if _, err := w.file.Seek(4, io.SeekStart); err != nil { // Skip magic number
+		return stats, fmt.Errorf("failed to seek past magic number: %w", err)
+	}
+
+	var version uint16
+	if err := binary.Read(w.file, binary.LittleEndian, &version); err != nil {
+		return stats, fmt.Errorf("failed to read version: %w", err)
+	}
+
+	// Determine the header size based on version
+	headerSize := 6 // Magic (4) + Version (2) for v1
+	if version == 2 {
+		headerSize = 14 // Magic (4) + Version (2) + NextTxID (8) for v2
+	}
+
+	// Seek to the beginning of the file, after the header
+	if _, err := w.file.Seek(int64(headerSize), io.SeekStart); err != nil {
+		return stats, fmt.Errorf("failed to seek to WAL data: %w", err)
+	}
+
+	reader := bufio.NewReader(w.file)
+
+	// Track transactions
+	activeTxs := make(map[uint64][]WALRecord)
+	committedTxs := make(map[uint64]bool)
+	rolledBackTxs := make(map[uint64]bool)
+	corruptedTxs := make(map[uint64]bool)
+
+	// First pass: identify transaction status and collect operations
+	firstPassPos, err := w.file.Seek(int64(headerSize), io.SeekStart)
+	if err != nil {
+		return stats, fmt.Errorf("failed to seek to WAL data for first pass: %w", err)
+	}
+
+	// First pass to determine transaction status and collect operations
+	for {
+		record, err := w.readRecord(reader)
+		if err == io.EOF {
+			break
+		}
+
+		stats.RecordCount++
+
+		if err != nil {
+			stats.CorruptedCount++
+			w.logger.Warn("Error reading WAL record during first pass at position %d: %v", stats.RecordCount, err)
+
+			// If this record is part of a transaction, mark the transaction as corrupted
+			if record.TxID > 0 {
+				corruptedTxs[record.TxID] = true
+
+				// Log more detailed corruption information including file position
+				filePos, _ := w.file.Seek(0, io.SeekCurrent)
+				w.logger.Warn("Transaction %d contains corrupted record at position %d (file offset approx: %d bytes)",
+					record.TxID, stats.RecordCount, filePos)
+			}
+
+			if options.StrictMode {
+				stats.EndTime = time.Now()
+				stats.Duration = stats.EndTime.Sub(stats.StartTime)
+				return stats, fmt.Errorf("corrupted WAL record at position %d in strict mode: %w", stats.RecordCount, err)
+			}
+			continue
+		}
+
+		switch record.Type {
+		case RecordTxBegin:
+			activeTxs[record.TxID] = make([]WALRecord, 0)
+			stats.TxBeginCount++
+		case RecordTxCommit:
+			delete(activeTxs, record.TxID)
+			committedTxs[record.TxID] = true
+			stats.TxCommitCount++
+		case RecordTxRollback:
+			delete(activeTxs, record.TxID)
+			rolledBackTxs[record.TxID] = true
+			stats.TxRollbackCount++
+		case RecordPut, RecordDelete:
+			// Store operations that are part of a transaction
+			if record.TxID > 0 {
+				if _, exists := activeTxs[record.TxID]; exists {
+					activeTxs[record.TxID] = append(activeTxs[record.TxID], record)
+				}
+			}
+		default:
+			w.logger.Warn("Unknown record type %d during first pass", record.Type)
+			if options.StrictMode {
+				stats.EndTime = time.Now()
+				stats.Duration = stats.EndTime.Sub(stats.StartTime)
+				return stats, fmt.Errorf("unknown record type %d in strict mode", record.Type)
+			}
+		}
+
+		// Update nextTxID based on records seen
+		if record.TxID > 0 && record.TxID >= w.nextTxID {
+			w.nextTxID = record.TxID + 1
+		}
+	}
+
+	// Track the number of incomplete transactions
+	stats.IncompleteTransactions = len(activeTxs)
+	stats.CorruptedTransactions = len(corruptedTxs)
+
+	// Second pass: apply standalone records first
+	_, err = w.file.Seek(firstPassPos, io.SeekStart)
+	if err != nil {
+		return stats, fmt.Errorf("failed to reset file position for second pass: %w", err)
+	}
+
+	reader = bufio.NewReader(w.file)
+
+	// Apply standalone operations (not part of any transaction)
+	for {
+		record, err := w.readRecord(reader)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// We already counted this in the first pass
+			// Get current file position for better error reporting
+			filePos, _ := w.file.Seek(0, io.SeekCurrent)
+			w.logger.Warn("Skipping corrupted record during second pass (file offset approx: %d bytes)", filePos)
+
+			if options.StrictMode {
+				stats.EndTime = time.Now()
+				stats.Duration = stats.EndTime.Sub(stats.StartTime)
+				return stats, fmt.Errorf("corrupted WAL record at position %d (file offset: %d) in strict mode: %w",
+					stats.RecordCount, filePos, err)
+			}
+			continue
+		}
+
+		// Only process standalone records (txID=0) in this pass
+		if record.TxID != 0 || record.Type == RecordTxBegin || record.Type == RecordTxCommit || record.Type == RecordTxRollback {
+			continue
+		}
+
+		// Apply standalone records
+		switch record.Type {
+		case RecordPut:
+			if err := memTable.Put(record.Key, record.Value); err != nil {
+				w.logger.Warn("Failed to apply standalone PUT record: %v", err)
+				if options.StrictMode {
+					stats.EndTime = time.Now()
+					stats.Duration = stats.EndTime.Sub(stats.StartTime)
+					return stats, fmt.Errorf("failed to apply record in strict mode: %w", err)
+				}
+				continue
+			}
+			stats.AppliedCount++
+			stats.StandaloneOpCount++
+
+		case RecordDelete:
+			if err := memTable.Delete(record.Key); err != nil {
+				w.logger.Warn("Failed to apply standalone DELETE record: %v", err)
+				if options.StrictMode {
+					stats.EndTime = time.Now()
+					stats.Duration = stats.EndTime.Sub(stats.StartTime)
+					return stats, fmt.Errorf("failed to apply record in strict mode: %w", err)
+				}
+				continue
+			}
+			stats.AppliedCount++
+			stats.StandaloneOpCount++
+
+		default:
+			w.logger.Warn("Unknown record type: %d", record.Type)
+			if options.StrictMode {
+				stats.EndTime = time.Now()
+				stats.Duration = stats.EndTime.Sub(stats.StartTime)
+				return stats, fmt.Errorf("unknown record type %d in strict mode", record.Type)
+			}
+			continue
+		}
+	}
+
+	// Third pass: apply transactions based on configuration
+	for txID, operations := range activeTxs {
+		// Skip rolled back transactions
+		if rolledBackTxs[txID] {
+			continue
+		}
+
+		// Handle corrupted transactions
+		if corruptedTxs[txID] {
+			if options.AtomicTxOnly {
+				// Skip entire transaction if it has corrupted records and we require atomic transactions
+				w.logger.Warn("Skipping corrupted transaction %d in atomic mode", txID)
+				stats.SkippedTxCount++
+				continue
+			} else {
+				w.logger.Warn("Applying valid operations from corrupted transaction %d in non-atomic mode", txID)
+				// We'll proceed with applying the operations, but expect some may fail
+			}
+		}
+
+		// Handle incomplete transactions
+		if !committedTxs[txID] {
+			if options.AtomicTxOnly {
+				// Skip incomplete transactions in atomic mode
+				w.logger.Warn("Skipping incomplete transaction %d in atomic mode", txID)
+				stats.SkippedTxCount++
+				continue
+			} else {
+				w.logger.Warn("Applying operations from incomplete transaction %d in non-atomic mode", txID)
+				// We'll proceed with applying the operations from incomplete transactions
+			}
+		}
+
+		// Apply the transaction operations
+		w.logger.Debug("Applying transaction %d with %d operations", txID, len(operations))
+
+		txApplyCount := 0
+		for _, op := range operations {
+			if op.Type == RecordPut || op.Type == RecordDelete {
+				var err error
+				switch op.Type {
+				case RecordPut:
+					err = memTable.Put(op.Key, op.Value)
+				case RecordDelete:
+					err = memTable.Delete(op.Key)
+				}
+
+				if err != nil {
+					w.logger.Warn("Failed to apply operation from transaction %d: %v", txID, err)
+					if options.AtomicTxOnly && committedTxs[txID] {
+						// This shouldn't happen in atomic mode with validation, but just in case
+						w.logger.Error("Unexpected failure applying validated transaction %d: %v", txID, err)
+					}
+				} else {
+					txApplyCount++
+					stats.AppliedCount++
+					stats.TransactionOpCount++
+				}
+			}
+		}
+
+		w.logger.Debug("Successfully applied %d operations from transaction %d", txApplyCount, txID)
+	}
+
+	// Restore any active transactions that were not completed
+	for txID := range activeTxs {
+		w.activeTxs[txID] = true
+	}
+
+	// Seek back to the end of the file for future writes
+	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+		return stats, fmt.Errorf("failed to seek to end of WAL: %w", err)
+	}
+
+	stats.EndTime = time.Now()
+	stats.Duration = stats.EndTime.Sub(stats.StartTime)
+
+	// Log detailed statistics
+	w.logger.Info("WAL replay completed: processed %d records, applied %d, corrupted %d",
+		stats.RecordCount, stats.AppliedCount, stats.CorruptedCount)
+	w.logger.Info("Transaction processing: processed %d standalone ops, %d tx ops, skipped %d txs",
+		stats.StandaloneOpCount, stats.TransactionOpCount, stats.SkippedTxCount)
+
+	return stats, nil
+}
+
 // IsOpen returns whether the WAL is open
 func (w *WAL) IsOpen() bool {
 	w.mu.Lock()
