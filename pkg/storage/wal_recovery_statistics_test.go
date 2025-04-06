@@ -9,7 +9,9 @@ import (
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
-// TestWALRecoveryStatistics tests that the WAL recovery statistics are correctly tracked
+// TestWALRecoveryStatistics tests that the WAL recovery correctly applies transactions
+// with different options. Since we no longer expose the internal statistics directly,
+// we'll test the behavior by examining the memtable state after replay.
 func TestWALRecoveryStatistics(t *testing.T) {
 	// Create a temporary directory for WAL files
 	tempDir, err := os.MkdirTemp("", "wal_stats_test")
@@ -99,7 +101,7 @@ func TestWALRecoveryStatistics(t *testing.T) {
 		t.Fatalf("Failed to close WAL: %v", err)
 	}
 
-	// Test statistics with default options (AtomicTxOnly=true)
+	// Test behavior with default options (AtomicTxOnly=true)
 	t.Run("DefaultOptions", func(t *testing.T) {
 		// Reopen the WAL
 		wal, err = NewWAL(WALConfig{
@@ -118,45 +120,54 @@ func TestWALRecoveryStatistics(t *testing.T) {
 			Comparator: DefaultComparator,
 		})
 
-		// Use the direct EnhancedReplayWithOptions function to get statistics
-		stats, err := EnhancedReplayWithOptions(wal, memTable, DefaultReplayOptions())
+		// Replay the WAL with default options
+		err = wal.Replay(memTable)
 		if err != nil {
 			t.Fatalf("Failed to replay WAL: %v", err)
 		}
 
-		// Verify statistics
-		// Total record count: 5 standalone + 1 tx begin + 3 tx ops + 1 tx commit + 1 tx begin + 2 tx ops + 1 tx rollback + 1 tx begin + 2 tx ops = 17
-		if stats.RecordCount != 17 {
-			t.Errorf("Expected RecordCount=17, got %d", stats.RecordCount)
+		// Verify that standalone operations were applied
+		for i := 0; i < 5; i++ {
+			key := []byte(fmt.Sprintf("standalone-key-%d", i+1))
+			value, err := memTable.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get standalone key %s: %v", key, err)
+			} else if string(value) != fmt.Sprintf("standalone-value-%d", i+1) {
+				t.Errorf("Wrong value for standalone key %s: %s", key, value)
+			}
 		}
 
-		// Applied count: 5 standalone + 3 committed tx ops = 8
-		if stats.AppliedCount != 8 {
-			t.Errorf("Expected AppliedCount=8, got %d", stats.AppliedCount)
+		// Verify that committed transaction operations were applied
+		for i := 0; i < 3; i++ {
+			key := []byte(fmt.Sprintf("commit-key-%d", i+1))
+			value, err := memTable.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get committed tx key %s: %v", key, err)
+			} else if string(value) != fmt.Sprintf("commit-value-%d", i+1) {
+				t.Errorf("Wrong value for committed tx key %s: %s", key, value)
+			}
 		}
 
-		// Standalone operations: 5
-		if stats.StandaloneOpCount != 5 {
-			t.Errorf("Expected StandaloneOpCount=5, got %d", stats.StandaloneOpCount)
+		// Verify that rolled back transaction operations were NOT applied
+		for i := 0; i < 2; i++ {
+			key := []byte(fmt.Sprintf("rollback-key-%d", i+1))
+			_, err := memTable.Get(key)
+			if err != ErrKeyNotFound {
+				t.Errorf("Rolled back tx key %s should not exist, but got %v", key, err)
+			}
 		}
 
-		// Transaction operations: 3 from committed transaction
-		if stats.TransactionOpCount != 3 {
-			t.Errorf("Expected TransactionOpCount=3, got %d", stats.TransactionOpCount)
-		}
-
-		// Incomplete transactions: 1
-		if stats.IncompleteTransactions != 1 {
-			t.Errorf("Expected IncompleteTransactions=1, got %d", stats.IncompleteTransactions)
-		}
-
-		// Skipped transactions: 1 (incomplete transaction)
-		if stats.SkippedTxCount != 1 {
-			t.Errorf("Expected SkippedTxCount=1, got %d", stats.SkippedTxCount)
+		// Verify that incomplete transaction operations were NOT applied (due to AtomicTxOnly=true)
+		for i := 0; i < 2; i++ {
+			key := []byte(fmt.Sprintf("incomplete-key-%d", i+1))
+			_, err := memTable.Get(key)
+			if err != ErrKeyNotFound {
+				t.Errorf("Incomplete tx key %s should not exist with AtomicTxOnly=true, but got %v", key, err)
+			}
 		}
 	})
 
-	// Test statistics with non-atomic options (AtomicTxOnly=false)
+	// Test behavior with non-atomic options (AtomicTxOnly=false)
 	t.Run("NonAtomicOptions", func(t *testing.T) {
 		// Reopen the WAL
 		wal, err = NewWAL(WALConfig{
@@ -181,41 +192,52 @@ func TestWALRecoveryStatistics(t *testing.T) {
 			AtomicTxOnly: false,
 		}
 
-		// Use the direct EnhancedReplayWithOptions function to get statistics
-		stats, err := EnhancedReplayWithOptions(wal, memTable, options)
+		// Replay the WAL with non-atomic options
+		err = wal.ReplayWithOptions(memTable, options)
 		if err != nil {
 			t.Fatalf("Failed to replay WAL: %v", err)
 		}
 
-		// Verify statistics
-		// Total record count: should be the same as before = 17
-		if stats.RecordCount != 17 {
-			t.Errorf("Expected RecordCount=17, got %d", stats.RecordCount)
+		// Verify that standalone operations were applied
+		for i := 0; i < 5; i++ {
+			key := []byte(fmt.Sprintf("standalone-key-%d", i+1))
+			value, err := memTable.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get standalone key %s: %v", key, err)
+			} else if string(value) != fmt.Sprintf("standalone-value-%d", i+1) {
+				t.Errorf("Wrong value for standalone key %s: %s", key, value)
+			}
 		}
 
-		// Applied count: 5 standalone + 3 committed tx ops + 2 incomplete tx ops = 10
-		if stats.AppliedCount != 10 {
-			t.Errorf("Expected AppliedCount=10, got %d", stats.AppliedCount)
+		// Verify that committed transaction operations were applied
+		for i := 0; i < 3; i++ {
+			key := []byte(fmt.Sprintf("commit-key-%d", i+1))
+			value, err := memTable.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get committed tx key %s: %v", key, err)
+			} else if string(value) != fmt.Sprintf("commit-value-%d", i+1) {
+				t.Errorf("Wrong value for committed tx key %s: %s", key, value)
+			}
 		}
 
-		// Standalone operations: 5
-		if stats.StandaloneOpCount != 5 {
-			t.Errorf("Expected StandaloneOpCount=5, got %d", stats.StandaloneOpCount)
+		// Verify that rolled back transaction operations were NOT applied
+		for i := 0; i < 2; i++ {
+			key := []byte(fmt.Sprintf("rollback-key-%d", i+1))
+			_, err := memTable.Get(key)
+			if err != ErrKeyNotFound {
+				t.Errorf("Rolled back tx key %s should not exist, but got %v", key, err)
+			}
 		}
 
-		// Transaction operations: 3 from committed + 2 from incomplete = 5
-		if stats.TransactionOpCount != 5 {
-			t.Errorf("Expected TransactionOpCount=5, got %d", stats.TransactionOpCount)
-		}
-
-		// Incomplete transactions: 1
-		if stats.IncompleteTransactions != 1 {
-			t.Errorf("Expected IncompleteTransactions=1, got %d", stats.IncompleteTransactions)
-		}
-
-		// Skipped transactions: 0 (we're applying incomplete transactions)
-		if stats.SkippedTxCount != 0 {
-			t.Errorf("Expected SkippedTxCount=0, got %d", stats.SkippedTxCount)
+		// Verify that incomplete transaction operations WERE applied (due to AtomicTxOnly=false)
+		for i := 0; i < 2; i++ {
+			key := []byte(fmt.Sprintf("incomplete-key-%d", i+1))
+			value, err := memTable.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get incomplete tx key %s with AtomicTxOnly=false: %v", key, err)
+			} else if string(value) != fmt.Sprintf("incomplete-value-%d", i+1) {
+				t.Errorf("Wrong value for incomplete tx key %s: %s", key, value)
+			}
 		}
 	})
 }
