@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package kgstore;
+
+option go_package = "git.canoozie.net/riddling/kgstore/proto";
+
+// KGStoreService provides graph database operations
+service KGStoreService {
+  // ExecuteQuery executes a query against the database
+  rpc ExecuteQuery(QueryRequest) returns (QueryResponse) {}
+  
+  // ExecuteStreamingQuery executes a query that may return a large result set
+  rpc ExecuteStreamingQuery(QueryRequest) returns (stream QueryResponse) {}
+  
+  // BeginTransaction starts a new transaction
+  rpc BeginTransaction(BeginTransactionRequest) returns (TransactionResponse) {}
+  
+  // CommitTransaction commits a transaction
+  rpc CommitTransaction(TransactionRequest) returns (TransactionResponse) {}
+  
+  // RollbackTransaction rolls back a transaction
+  rpc RollbackTransaction(TransactionRequest) returns (TransactionResponse) {}
+}
+
+// QueryRequest encodes a query to be executed
+message QueryRequest {
+  // Query type identifies the operation to perform
+  QueryType type = 1;
+  
+  // Parameters for the query
+  map<string, string> parameters = 2;
+  
+  // Optional transaction ID if executing as part of a transaction
+  string transaction_id = 3;
+}
+
+// QueryResponse contains the result of a query
+message QueryResponse {
+  // Nodes returned by the query
+  repeated Node nodes = 1;
+  
+  // Edges returned by the query
+  repeated Edge edges = 2;
+  
+  // Paths returned by the query
+  repeated Path paths = 3;
+  
+  // Result of data modification operations
+  string node_id = 4;
+  string edge_id = 5;
+  bool success = 6;
+  string operation = 7;
+  
+  // Error message if the query failed
+  string error = 8;
+}
+
+// BeginTransactionRequest is empty since no parameters are required
+message BeginTransactionRequest {}
+
+// TransactionRequest contains a transaction ID
+message TransactionRequest {
+  string transaction_id = 1;
+}
+
+// TransactionResponse contains the result of a transaction operation
+message TransactionResponse {
+  string transaction_id = 1;
+  bool success = 2;
+  string operation = 3;
+  string error = 4;
+}
+
+// QueryType enum represents the supported query types
+enum QueryType {
+  // Read operations
+  FIND_NODES_BY_LABEL = 0;
+  FIND_EDGES_BY_LABEL = 1;
+  FIND_NODES_BY_PROPERTY = 2;
+  FIND_EDGES_BY_PROPERTY = 3;
+  FIND_NEIGHBORS = 4;
+  FIND_PATH = 5;
+  
+  // Write operations
+  CREATE_NODE = 6;
+  CREATE_EDGE = 7;
+  DELETE_NODE = 8;
+  DELETE_EDGE = 9;
+  SET_PROPERTY = 10;
+  REMOVE_PROPERTY = 11;
+}
+
+// Node represents a node in the graph
+message Node {
+  uint64 id = 1;
+  string label = 2;
+  map<string, string> properties = 3;
+}
+
+// Edge represents an edge in the graph
+message Edge {
+  uint64 source_id = 1;
+  uint64 target_id = 2;
+  string label = 3;
+  map<string, string> properties = 4;
+}
+
+// Path represents a path through the graph
+message Path {
+  repeated Node nodes = 1;
+  repeated Edge edges = 2;
+}

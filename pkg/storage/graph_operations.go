@@ -98,18 +98,37 @@ func (g *GraphStore) CreateNode(tx *Transaction, label string) (string, error) {
 		return "", fmt.Errorf("failed to serialize node: %w", err)
 	}
 
-	// Create the node key
+	// Create the node key with prefix (n:nodeID)
 	nodeKey := []byte(nodeKeyPrefix + nodeIDStr)
 
-	// Store the node in the database
+	// Store the node in the database with the prefix
 	if err := g.engine.Put(nodeKey, nodeData); err != nil {
 		return "", fmt.Errorf("failed to store node: %w", err)
 	}
 
-	// Add to the label index
+	// Also store with just the ID as key for compatibility with some access patterns
+	nodeKeyWithoutPrefix := []byte(nodeIDStr)
+	g.logger.Debug("Also storing node with raw ID key: %s", nodeIDStr)
+	if err := g.engine.Put(nodeKeyWithoutPrefix, nodeData); err != nil {
+		g.logger.Warn("Failed to store node with raw ID key: %v", err)
+		// Continue even if this fails, not critical
+	}
+
+	// Add to the label index - this is for compatibility with old index approach
 	labelKey := []byte(nodeLabelPrefix + label + ":" + nodeIDStr)
 	if err := g.engine.Put(labelKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update label index: %w", err)
+	}
+
+	// Also add to node label index (needed especially for LSM-based index)
+	nlIdx, err := NewNodeLabelIndex(g.engine, g.logger)
+	if err != nil {
+		g.logger.Warn("Failed to create node label index for adding node %s with label %s: %v", nodeIDStr, label, err)
+	} else {
+		err = nlIdx.Put([]byte(label), []byte(nodeIDStr))
+		if err != nil {
+			g.logger.Warn("Failed to add node %s to label index for label %s: %v", nodeIDStr, label, err)
+		}
 	}
 
 	g.logger.Debug("Created node %s with label %s", nodeIDStr, label)
@@ -195,30 +214,125 @@ func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label strin
 		return "", fmt.Errorf("failed to serialize edge: %w", err)
 	}
 
-	// Create the edge key
+	// Create the edge key with prefix (e:edgeID)
 	edgeKey := []byte(edgeKeyPrefix + edgeIDStr)
 
-	// Store the edge in the database
+	// Store the edge in the database with the prefix
 	if err := g.engine.Put(edgeKey, edgeData); err != nil {
 		return "", fmt.Errorf("failed to store edge: %w", err)
 	}
 
-	// Add to the label index
+	// Also store with just the ID as key for compatibility with some access patterns
+	edgeKeyWithoutPrefix := []byte(edgeIDStr)
+	g.logger.Debug("Also storing edge with raw ID key: %s", edgeIDStr)
+	if err := g.engine.Put(edgeKeyWithoutPrefix, edgeData); err != nil {
+		g.logger.Warn("Failed to store edge with raw ID key: %v", err)
+		// Continue even if this fails, not critical
+	}
+
+	// Add to the label index - compatibility with old approach
 	labelKey := []byte(edgeLabelPrefix + label + ":" + edgeIDStr)
 	if err := g.engine.Put(labelKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update label index: %w", err)
 	}
 
-	// Add to the source node index
+	// Also add to edge label index using the proper index
+	elIdx, err := NewEdgeLabelIndex(g.engine, g.logger)
+	if err != nil {
+		g.logger.Warn("Failed to create edge label index for adding edge %s with label %s: %v", edgeIDStr, label, err)
+	} else {
+		err = elIdx.Put([]byte(label), []byte(edgeIDStr))
+		if err != nil {
+			g.logger.Warn("Failed to add edge %s to label index for label %s: %v", edgeIDStr, label, err)
+		}
+	}
+
+	// Add to the source node index with prefix (sn:)
 	sourceKey := []byte(sourceNodePrefix + sourceID + ":" + edgeIDStr)
 	if err := g.engine.Put(sourceKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update source node index: %w", err)
 	}
 
-	// Add to the target node index
+	// Also store with outgoing:node_id for compatibility
+	outgoingKey := []byte(fmt.Sprintf("outgoing:%s", sourceID))
+	outgoingEdges, err := g.engine.Get(outgoingKey)
+	if err != nil && err != ErrKeyNotFound {
+		g.logger.Warn("Failed to get outgoing edges for node %s: %v", sourceID, err)
+	}
+
+	// Create or update outgoing edges list
+	var outEdgeIDs []string
+	if err == nil {
+		// Deserialize existing edges if found
+		g.logger.Debug("Found existing outgoing edges for node %s, deserializing", sourceID)
+		err = model.Deserialize(outgoingEdges, &outEdgeIDs)
+		if err != nil {
+			g.logger.Warn("Failed to deserialize outgoing edges for node %s: %v", sourceID, err)
+			outEdgeIDs = make([]string, 0)
+		} else {
+			g.logger.Debug("Found %d existing outgoing edges for node %s: %v", len(outEdgeIDs), sourceID, outEdgeIDs)
+		}
+	} else {
+		// Create a new list if not found
+		g.logger.Debug("No existing outgoing edges found for node %s, creating new list", sourceID)
+		outEdgeIDs = make([]string, 0)
+	}
+
+	// Add this edge ID to the list
+	outEdgeIDs = append(outEdgeIDs, edgeIDStr)
+
+	// Serialize and store the updated list
+	outData, err := model.Serialize(outEdgeIDs)
+	if err != nil {
+		g.logger.Warn("Failed to serialize outgoing edges for node %s: %v", sourceID, err)
+	} else {
+		g.logger.Debug("Storing %d outgoing edges for node %s with key %s: %v",
+			len(outEdgeIDs), sourceID, string(outgoingKey), outEdgeIDs)
+		if err := g.engine.Put(outgoingKey, outData); err != nil {
+			g.logger.Warn("Failed to update outgoing edges for node %s: %v", sourceID, err)
+		} else {
+			g.logger.Debug("Successfully stored outgoing edges for node %s", sourceID)
+		}
+	}
+
+	// Add to the target node index with prefix (tn:)
 	targetKey := []byte(targetNodePrefix + targetID + ":" + edgeIDStr)
 	if err := g.engine.Put(targetKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update target node index: %w", err)
+	}
+
+	// Also store with incoming:node_id for compatibility
+	incomingKey := []byte(fmt.Sprintf("incoming:%s", targetID))
+	incomingEdges, err := g.engine.Get(incomingKey)
+	if err != nil && err != ErrKeyNotFound {
+		g.logger.Warn("Failed to get incoming edges for node %s: %v", targetID, err)
+	}
+
+	// Create or update incoming edges list
+	var inEdgeIDs []string
+	if err == nil {
+		// Deserialize existing edges if found
+		err = model.Deserialize(incomingEdges, &inEdgeIDs)
+		if err != nil {
+			g.logger.Warn("Failed to deserialize incoming edges for node %s: %v", targetID, err)
+			inEdgeIDs = make([]string, 0)
+		}
+	} else {
+		// Create a new list if not found
+		inEdgeIDs = make([]string, 0)
+	}
+
+	// Add this edge ID to the list
+	inEdgeIDs = append(inEdgeIDs, edgeIDStr)
+
+	// Serialize and store the updated list
+	inData, err := model.Serialize(inEdgeIDs)
+	if err != nil {
+		g.logger.Warn("Failed to serialize incoming edges for node %s: %v", targetID, err)
+	} else {
+		if err := g.engine.Put(incomingKey, inData); err != nil {
+			g.logger.Warn("Failed to update incoming edges for node %s: %v", targetID, err)
+		}
 	}
 
 	g.logger.Debug("Created edge %s from %s to %s with label %s", edgeIDStr, sourceID, targetID, label)

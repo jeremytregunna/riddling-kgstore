@@ -161,15 +161,34 @@ func CreateSSTableWithOptions(config SSTableConfig, memTable MemTableInterface, 
 		}
 	}()
 
+	// Check if we have any entries to process
 	if len(entries) == 0 {
-		// Create empty SSTable files
+		// Nothing to flush, return a dummy SSTable
+		sst.logger.Info("Creating dummy SSTable for empty memtable")
 		if err := sst.createEmptySSTable(); err != nil {
 			return nil, fmt.Errorf("failed to create empty SSTable: %w", err)
 		}
 	} else {
-		// Build the SSTable files
-		if err := sst.buildFromEntries(entries); err != nil {
-			return nil, fmt.Errorf("failed to build SSTable: %w", err)
+		// Check if the entries slice only contains empty elements
+		hasData := false
+		for _, entry := range entries {
+			if len(entry) > 0 {
+				hasData = true
+				break
+			}
+		}
+
+		if !hasData {
+			// Even though entries has elements, they're all empty
+			sst.logger.Info("Creating dummy SSTable - entries slice contains only empty elements")
+			if err := sst.createEmptySSTable(); err != nil {
+				return nil, fmt.Errorf("failed to create empty SSTable: %w", err)
+			}
+		} else {
+			// Build the SSTable files
+			if err := sst.buildFromEntries(entries); err != nil {
+				return nil, fmt.Errorf("failed to build SSTable: %w", err)
+			}
 		}
 	}
 
@@ -416,7 +435,27 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	// We support two formats:
 	// 1. Regular format: key, value pairs (len % 2 == 0)
 	// 2. Versioned format: key, value, version, isDeleted (len % 4 == 0)
-	if len(entries) == 0 || (len(entries)%2 != 0 && len(entries)%4 != 0) {
+	if len(entries) == 0 {
+		// Return a meaningful error for empty entries
+		sst.logger.Info("Attempted to build SSTable from empty entries - skipping")
+		return sst.createEmptySSTable() // Create empty files instead of returning
+	}
+
+	// Additional defensive check - if entries has elements but they're all empty
+	hasData := false
+	for _, entry := range entries {
+		if len(entry) > 0 {
+			hasData = true
+			break
+		}
+	}
+
+	if !hasData {
+		sst.logger.Info("All entries are empty - creating empty SSTable")
+		return sst.createEmptySSTable()
+	}
+
+	if len(entries)%2 != 0 && len(entries)%4 != 0 {
 		return errors.New("invalid entries: must be non-empty and contain valid entry format")
 	}
 
@@ -452,6 +491,12 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 	headerSize := 14 + 8 // Magic(4) + Version(2) + KeyCount(4) + MinKeyLen(2) + MaxKeyLen(2) + Timestamp(8)
 
 	// Get min and max keys from entries
+	// Defensive check to make sure we have valid entries
+	if len(entries) == 0 || len(entries[0]) == 0 {
+		sst.logger.Info("No valid entries found during SSTable creation - creating empty SSTable")
+		return sst.createEmptySSTable()
+	}
+
 	minKey := entries[0]
 	maxKey := entries[0]
 

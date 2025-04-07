@@ -77,6 +77,10 @@ func (idx *lsmNodeLabelIndex) Put(label, nodeID []byte) error {
 	// Store a simple marker value (1 byte) - the actual data is in the key
 	marker := []byte{1}
 
+	// Log the key being created
+	idx.logger.Debug("Creating LSM node label index entry with key %s for label %s and node ID %s",
+		string(key), string(label), string(nodeID))
+
 	// Store in the underlying storage
 	err := idx.storage.Put(key, marker)
 	if err != nil {
@@ -243,19 +247,26 @@ func (idx *lsmNodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 		return nil, ErrIndexClosed
 	}
 
+	idx.logger.Debug("GetAll called for label '%s' in LSM node label index", string(label))
+
 	// Check cache first
 	if cached, ok := idx.cache.Get(label); ok {
+		idx.logger.Debug("Found %d cached node IDs for label '%s'", len(cached), string(label))
 		return cached, nil
 	}
 
 	// Create a prefix for range scan
 	prefix := idx.makeLabelPrefix(label)
+	idx.logger.Debug("Scanning LSM index with prefix '%s'", string(prefix))
 
 	// Scan for all keys with this prefix
 	nodeIDs, err := idx.scanKeysWithPrefix(prefix)
 	if err != nil {
+		idx.logger.Error("Failed to scan for node IDs with prefix '%s': %v", string(prefix), err)
 		return nil, fmt.Errorf("failed to scan for node IDs: %w", err)
 	}
+
+	idx.logger.Debug("Found %d node IDs for label '%s' in LSM index", len(nodeIDs), string(label))
 
 	// Cache the results
 	idx.cache.Put(label, nodeIDs)

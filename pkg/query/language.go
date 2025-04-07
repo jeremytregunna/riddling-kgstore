@@ -104,7 +104,7 @@ func Parse(queryStr string) (*Query, error) {
 		return nil, fmt.Errorf("%w: missing closing parenthesis", ErrInvalidQuery)
 	}
 
-	queryType := QueryType(strings.TrimSpace(queryStr[:openParenIndex]))
+	queryType := QueryType(strings.ToUpper(strings.TrimSpace(queryStr[:openParenIndex])))
 	paramsStr := queryStr[openParenIndex+1 : closeParenIndex]
 
 	// Validate query type
@@ -202,8 +202,11 @@ func validateQueryParameters(query *Query) error {
 			return fmt.Errorf("%w: missing required parameter 'label'", ErrInvalidQuery)
 		}
 	case QueryTypeCreateEdge:
-		if _, ok := query.Parameters[ParamSource]; !ok {
-			return fmt.Errorf("%w: missing required parameter 'source'", ErrInvalidQuery)
+		// Check both sourceId and source parameters (prefer sourceId if both present)
+		if _, ok := query.Parameters[ParamSourceID]; !ok {
+			if _, ok := query.Parameters[ParamSource]; !ok {
+				return fmt.Errorf("%w: missing required parameter 'sourceId' or 'source'", ErrInvalidQuery)
+			}
 		}
 		if _, ok := query.Parameters[ParamTargetID]; !ok {
 			return fmt.Errorf("%w: missing required parameter 'targetId'", ErrInvalidQuery)

@@ -14,6 +14,7 @@ KGStore is designed as a single-file database format optimized for knowledge gra
 - **Query Support**: Graph traversal and querying capabilities
 - **Property Indexing**: Specialized indexing for efficient property lookups
 - **Lock-Free Data Structures**: High-performance concurrent operations
+- **gRPC Service**: Language-agnostic network interface with efficient Protocol Buffers encoding
 
 ## Storage Architecture
 
@@ -128,6 +129,49 @@ The query language supports:
 - Explicit transaction control with commit and rollback capabilities
 - Auto-transaction support for single operations when not in an explicit transaction
 
+## gRPC Service
+
+KGStore includes a high-performance gRPC service that provides a language-agnostic interface to the database:
+
+- **Efficient Protocol Buffers Encoding**: Compact binary representation of queries and results
+- **Full Query Language Support**: All operations available via the query language are supported over gRPC
+- **Transaction Management**: Begin, commit, and rollback transactions over the network
+- **Streaming Support**: Efficiently stream large result sets
+- **Command-line Client**: Simple client for interacting with the service from the command line
+
+See [GRPC_SERVICE.md](docs/GRPC_SERVICE.md) for detailed documentation on using the gRPC service.
+
+### gRPC Service Example
+
+```bash
+# Start the server
+./bin/server
+
+# In another terminal, begin a transaction
+./bin/client -type=BEGIN_TRANSACTION
+# Returns: {"transaction_id": "tx-1", "success": true, "operation": "BEGIN_TRANSACTION"}
+
+# Create a node within the transaction and name it with ref "person1"
+./bin/client -type=CREATE_NODE -params='{"label":"Person","ref":"person1"}' -txid=tx-1
+# Returns: {"node_id": "1", "success": true, "operation": "CREATE_NODE", "txId": "tx-1", "entityIds": ["1"]}
+
+# Create another node with ref "person2"
+./bin/client -type=CREATE_NODE -params='{"label":"Person","ref":"person2"}' -txid=tx-1
+# Returns: {"node_id": "2", "success": true, "operation": "CREATE_NODE", "txId": "tx-1", "entityIds": ["2"]}
+
+# Create an edge between the two nodes using references
+./bin/client -type=CREATE_EDGE -params='{"sourceId":"$person1","targetId":"$person2","label":"KNOWS"}' -txid=tx-1
+# Returns: {"edge_id": "1-2", "success": true, "operation": "CREATE_EDGE", "txId": "tx-1", "entityIds": ["1-2"]}
+
+# Commit the transaction
+./bin/client -type=COMMIT_TRANSACTION -txid=tx-1
+# Returns: {"transaction_id": "tx-1", "success": true, "operation": "COMMIT_TRANSACTION"}
+
+# Query the database
+./bin/client -type=FIND_NODES_BY_LABEL -params='{"label":"Person"}'
+# Returns: {"nodes": [{"id": "1", "label": "Person", "properties": {}}, {"id": "2", "label": "Person", "properties": {}}]}
+```
+
 ## Usage Example
 
 ```go
@@ -164,25 +208,26 @@ func main() {
         // Start a transaction
         "BEGIN_TRANSACTION()",
         
-        // Create nodes
-        "CREATE_NODE(label: \"Person\")", // Returns node ID in results.EntityIDs[0]
-        "CREATE_NODE(label: \"Person\")", // Returns node ID in results.EntityIDs[0]
+        // Create nodes with references
+        "CREATE_NODE(label: \"Person\", ref: \"person1\")", // Store node with reference "person1"
+        "CREATE_NODE(label: \"Person\", ref: \"person2\")", // Store node with reference "person2"
         
-        // Set properties on nodes (assuming node IDs are "1" and "2" for simplicity)
-        "SET_PROPERTY(target: \"node\", id: \"1\", name: \"name\", value: \"John Doe\")",
-        "SET_PROPERTY(target: \"node\", id: \"2\", name: \"name\", value: \"Jane Smith\")",
+        // Set properties on nodes using references
+        "SET_PROPERTY(target: \"node\", id: \"$person1\", name: \"name\", value: \"John Doe\")",
+        "SET_PROPERTY(target: \"node\", id: \"$person2\", name: \"name\", value: \"Jane Smith\")",
         
-        // Create an edge between nodes
-        "CREATE_EDGE(sourceId: \"1\", targetId: \"2\", label: \"KNOWS\")", // Returns edge ID
+        // Create an edge between nodes using references
+        "CREATE_EDGE(sourceId: \"$person1\", targetId: \"$person2\", label: \"KNOWS\", ref: \"knows_edge\")",
         
-        // Set property on edge (assuming edge ID is "e1" for simplicity)
-        "SET_PROPERTY(target: \"edge\", id: \"e1\", name: \"since\", value: \"2025-04-01\")",
+        // Set property on edge using reference
+        "SET_PROPERTY(target: \"edge\", id: \"$knows_edge\", name: \"since\", value: \"2025-04-01\")",
         
         // Commit the transaction
         "COMMIT_TRANSACTION()"
     }
 
     // Execute the transaction
+    var txID string
     var nodeID1, nodeID2, edgeID string
     
     for i, queryStr := range queries {
@@ -191,12 +236,22 @@ func main() {
             log.Fatalf("Failed to parse query: %v", err)
         }
         
+        // Add transaction ID to subsequent queries
+        if i > 0 && txID != "" {
+            parsedQuery.Parameters[query.ParamTransactionID] = txID
+        }
+        
         results, err := executor.Execute(parsedQuery)
         if err != nil {
             log.Fatalf("Failed to execute query: %v", err)
         }
         
-        // Store IDs from creation operations for later use
+        // Store transaction ID from BEGIN_TRANSACTION
+        if i == 0 {
+            txID = results.TxID
+        }
+        
+        // Store IDs from creation operations for later use (outside transaction)
         if i == 1 && len(results.EntityIDs) > 0 {
             nodeID1 = results.EntityIDs[0] // First node ID
         } else if i == 2 && len(results.EntityIDs) > 0 {
@@ -344,6 +399,7 @@ KGStore includes several optimizations for high performance:
 - **Two-Phase Deletion**: Allows ongoing reads to complete during compaction
 - **Result Caching**: For frequently accessed data
 - **Configurable Memory Budget**: Adjustable MemTable size for different workloads
+- **Protocol Buffers**: Efficient binary encoding for network communication
 
 ## Development
 
@@ -358,6 +414,9 @@ go test ./...
 
 # Run benchmarks
 ./scripts/run_benchmarks.sh
+
+# Run the gRPC service demo
+./scripts/demo_grpc.sh
 ```
 
 ## License

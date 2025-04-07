@@ -97,7 +97,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 				b.Fatalf("Failed to serialize node: %v", err)
 			}
 
-			err = nodeIndex.Put([]byte(fmt.Sprintf("node:%d", nodeID)), nodeBytes)
+			err = nodeIndex.Put([]byte(FormatNodeKey(nodeID)), nodeBytes)
 			if err != nil {
 				b.Fatalf("Failed to add node to index: %v", err)
 			}
@@ -173,7 +173,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 				b.Fatalf("Failed to serialize edge: %v", err)
 			}
 
-			err = edgeIndex.Put([]byte(fmt.Sprintf("edge:%s", edgeID)), edgeBytes)
+			err = edgeIndex.Put([]byte(FormatEdgeKey(edgeID)), edgeBytes)
 			if err != nil {
 				b.Fatalf("Failed to add edge to index: %v", err)
 			}
@@ -203,7 +203,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 			b.Fatalf("Failed to serialize outgoing edge IDs: %v", err)
 		}
 
-		outKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
+		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
 		err = edgeIndex.Put(outKey, edgeIDsBytes)
 		if err != nil {
 			b.Fatalf("Failed to add outgoing edges index: %v", err)
@@ -218,7 +218,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 			b.Fatalf("Failed to serialize incoming edge IDs: %v", err)
 		}
 
-		inKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
+		inKey := []byte(FormatIncomingEdgesKey(nodeID))
 		err = edgeIndex.Put(inKey, edgeIDsBytes)
 		if err != nil {
 			b.Fatalf("Failed to add incoming edges index: %v", err)

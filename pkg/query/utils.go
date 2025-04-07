@@ -35,20 +35,20 @@ func GetOrDefault(params map[string]string, key, defaultValue string) string {
 
 // FormatNodeKey formats a node key for storage
 func FormatNodeKey(nodeID uint64) string {
-	return fmt.Sprintf("node:%d", nodeID)
+	return fmt.Sprintf("n:%d", nodeID)
 }
 
 // FormatEdgeKey formats an edge key for storage
 func FormatEdgeKey(edgeID string) string {
-	return fmt.Sprintf("edge:%s", edgeID)
+	return fmt.Sprintf("e:%s", edgeID)
 }
 
 // FormatOutgoingEdgesKey formats a key for outgoing edges
 func FormatOutgoingEdgesKey(nodeID uint64) string {
-	return fmt.Sprintf("outgoing:%d", nodeID)
+	return fmt.Sprintf("sn:%d", nodeID)
 }
 
 // FormatIncomingEdgesKey formats a key for incoming edges
 func FormatIncomingEdgesKey(nodeID uint64) string {
-	return fmt.Sprintf("incoming:%d", nodeID)
+	return fmt.Sprintf("tn:%d", nodeID)
 }

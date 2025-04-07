@@ -141,7 +141,7 @@ func TestUtils(t *testing.T) {
 	})
 
 	t.Run("FormatNodeKey", func(t *testing.T) {
-		expected := "node:123"
+		expected := "n:123"
 		got := FormatNodeKey(123)
 		if got != expected {
 			t.Errorf("FormatNodeKey() = %v, want %v", got, expected)
@@ -149,7 +149,7 @@ func TestUtils(t *testing.T) {
 	})
 
 	t.Run("FormatEdgeKey", func(t *testing.T) {
-		expected := "edge:123"
+		expected := "e:123"
 		got := FormatEdgeKey("123")
 		if got != expected {
 			t.Errorf("FormatEdgeKey() = %v, want %v", got, expected)
@@ -157,7 +157,7 @@ func TestUtils(t *testing.T) {
 	})
 
 	t.Run("FormatOutgoingEdgesKey", func(t *testing.T) {
-		expected := "outgoing:123"
+		expected := "sn:123"
 		got := FormatOutgoingEdgesKey(123)
 		if got != expected {
 			t.Errorf("FormatOutgoingEdgesKey() = %v, want %v", got, expected)
@@ -165,7 +165,7 @@ func TestUtils(t *testing.T) {
 	})
 
 	t.Run("FormatIncomingEdgesKey", func(t *testing.T) {
-		expected := "incoming:123"
+		expected := "tn:123"
 		got := FormatIncomingEdgesKey(123)
 		if got != expected {
 			t.Errorf("FormatIncomingEdgesKey() = %v, want %v", got, expected)

@@ -149,12 +149,14 @@ func ReadStringMap(r io.Reader) (map[string]string, error) {
 // WriteUint64List writes a list of uint64 values to a buffer
 func WriteUint64List(buf *bytes.Buffer, ids []uint64) error {
 	// Write the count
-	if err := binary.Write(buf, binary.LittleEndian, uint32(len(ids))); err != nil {
+	count := uint32(len(ids))
+	if err := binary.Write(buf, binary.LittleEndian, count); err != nil {
 		return err
 	}
 
 	// Write each ID
-	for _, id := range ids {
+	for i := uint32(0); i < count; i++ {
+		id := ids[i]
 		if err := binary.Write(buf, binary.LittleEndian, id); err != nil {
 			return err
 		}

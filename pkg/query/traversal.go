@@ -53,7 +53,7 @@ func (t *Traversal) SetType(traversalType TraversalType) {
 // Run starts a traversal from the given source node
 func (t *Traversal) Run(sourceID uint64, direction string, visitor TraversalVisitor) error {
 	// First check if the source node exists
-	sourceKey := []byte(fmt.Sprintf("node:%d", sourceID))
+	sourceKey := []byte(FormatNodeKey(sourceID))
 	sourceBytes, err := t.NodeIndex.Get(sourceKey)
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
@@ -199,7 +199,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 
 	if direction == DirectionOutgoing || direction == DirectionBoth {
 		// Get outgoing edges
-		outKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
+		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
 		outEdgeIDsBytes, err := t.EdgeIndex.Get(outKey)
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", nodeID, err)
@@ -214,7 +214,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 
 			// Process each outgoing edge
 			for _, edgeID := range outEdgeIDs {
-				edgeKey := []byte(fmt.Sprintf("edge:%s", edgeID))
+				edgeKey := []byte(FormatEdgeKey(edgeID))
 				edgeBytes, err := t.EdgeIndex.Get(edgeKey)
 				if err != nil {
 					if err != storage.ErrKeyNotFound {
@@ -239,7 +239,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 
 	if direction == DirectionIncoming || direction == DirectionBoth {
 		// Get incoming edges
-		inKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
+		inKey := []byte(FormatIncomingEdgesKey(nodeID))
 		inEdgeIDsBytes, err := t.EdgeIndex.Get(inKey)
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting incoming edges for node %d: %w", nodeID, err)
@@ -254,7 +254,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 
 			// Process each incoming edge
 			for _, edgeID := range inEdgeIDs {
-				edgeKey := []byte(fmt.Sprintf("edge:%s", edgeID))
+				edgeKey := []byte(FormatEdgeKey(edgeID))
 				edgeBytes, err := t.EdgeIndex.Get(edgeKey)
 				if err != nil {
 					if err != storage.ErrKeyNotFound {
@@ -279,7 +279,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 
 	// Get nodes for the neighbor IDs
 	for id := range neighborIDs {
-		nodeKey := []byte(fmt.Sprintf("node:%d", id))
+		nodeKey := []byte(FormatNodeKey(id))
 		nodeBytes, err := t.NodeIndex.Get(nodeKey)
 		if err != nil {
 			if err != storage.ErrKeyNotFound {
