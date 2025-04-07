@@ -11,12 +11,26 @@ import (
 type QueryType string
 
 const (
+	// Read operations
 	QueryTypeFindNodesByLabel    QueryType = "FIND_NODES_BY_LABEL"
 	QueryTypeFindEdgesByLabel    QueryType = "FIND_EDGES_BY_LABEL"
 	QueryTypeFindNodesByProperty QueryType = "FIND_NODES_BY_PROPERTY"
 	QueryTypeFindEdgesByProperty QueryType = "FIND_EDGES_BY_PROPERTY"
 	QueryTypeFindNeighbors       QueryType = "FIND_NEIGHBORS"
 	QueryTypeFindPath            QueryType = "FIND_PATH"
+	
+	// Write operations
+	QueryTypeCreateNode        QueryType = "CREATE_NODE"
+	QueryTypeCreateEdge        QueryType = "CREATE_EDGE"
+	QueryTypeDeleteNode        QueryType = "DELETE_NODE"
+	QueryTypeDeleteEdge        QueryType = "DELETE_EDGE"
+	QueryTypeSetProperty       QueryType = "SET_PROPERTY"
+	QueryTypeRemoveProperty    QueryType = "REMOVE_PROPERTY"
+	
+	// Transaction operations
+	QueryTypeBeginTransaction  QueryType = "BEGIN_TRANSACTION"
+	QueryTypeCommitTransaction QueryType = "COMMIT_TRANSACTION"
+	QueryTypeRollbackTransaction QueryType = "ROLLBACK_TRANSACTION"
 )
 
 // Query represents a parsed query
@@ -27,6 +41,7 @@ type Query struct {
 
 // Parameter keys
 const (
+	// Read operation parameters
 	ParamLabel         = "label"
 	ParamNodeID        = "nodeId"
 	ParamDirection     = "direction"
@@ -35,6 +50,16 @@ const (
 	ParamTargetID      = "targetId"
 	ParamPropertyName  = "propertyName"
 	ParamPropertyValue = "propertyValue"
+	
+	// Write operation parameters
+	ParamTarget        = "target"      // "node" or "edge"
+	ParamSource        = "source"      // Source node ID for edge creation
+	ParamValue         = "value"       // Property value
+	ParamName          = "name"        // Property name
+	ParamID            = "id"          // Element ID
+	
+	// Transaction parameters
+	ParamTransactionID = "txId"        // Transaction ID
 )
 
 // Direction types for traversal
@@ -86,7 +111,11 @@ func Parse(queryStr string) (*Query, error) {
 	switch queryType {
 	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel,
 		QueryTypeFindNodesByProperty, QueryTypeFindEdgesByProperty,
-		QueryTypeFindNeighbors, QueryTypeFindPath:
+		QueryTypeFindNeighbors, QueryTypeFindPath,
+		QueryTypeCreateNode, QueryTypeCreateEdge,
+		QueryTypeDeleteNode, QueryTypeDeleteEdge,
+		QueryTypeSetProperty, QueryTypeRemoveProperty,
+		QueryTypeBeginTransaction, QueryTypeCommitTransaction, QueryTypeRollbackTransaction:
 		// Valid query type
 	default:
 		return nil, fmt.Errorf("%w: unknown query type: %s", ErrInvalidQuery, queryType)
@@ -135,6 +164,7 @@ func Parse(queryStr string) (*Query, error) {
 // validateQueryParameters validates that the query has all required parameters
 func validateQueryParameters(query *Query) error {
 	switch query.Type {
+	// Read operations
 	case QueryTypeFindNodesByLabel, QueryTypeFindEdgesByLabel:
 		if _, ok := query.Parameters[ParamLabel]; !ok {
 			return fmt.Errorf("%w: missing required parameter 'label'", ErrInvalidQuery)
@@ -165,6 +195,61 @@ func validateQueryParameters(query *Query) error {
 			return fmt.Errorf("%w: missing required parameter 'targetId'", ErrInvalidQuery)
 		}
 		// MaxHops is optional, defaults to a reasonable value in the executor
+	
+	// Write operations
+	case QueryTypeCreateNode:
+		if _, ok := query.Parameters[ParamLabel]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'label'", ErrInvalidQuery)
+		}
+	case QueryTypeCreateEdge:
+		if _, ok := query.Parameters[ParamSource]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'source'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamTargetID]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'targetId'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamLabel]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'label'", ErrInvalidQuery)
+		}
+	case QueryTypeDeleteNode, QueryTypeDeleteEdge:
+		if _, ok := query.Parameters[ParamID]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'id'", ErrInvalidQuery)
+		}
+	case QueryTypeSetProperty:
+		if _, ok := query.Parameters[ParamTarget]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'target'", ErrInvalidQuery)
+		}
+		if target := query.Parameters[ParamTarget]; target != "node" && target != "edge" {
+			return fmt.Errorf("%w: invalid target parameter, must be 'node' or 'edge'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamID]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'id'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamName]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'name'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamValue]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'value'", ErrInvalidQuery)
+		}
+	case QueryTypeRemoveProperty:
+		if _, ok := query.Parameters[ParamTarget]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'target'", ErrInvalidQuery)
+		}
+		if target := query.Parameters[ParamTarget]; target != "node" && target != "edge" {
+			return fmt.Errorf("%w: invalid target parameter, must be 'node' or 'edge'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamID]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'id'", ErrInvalidQuery)
+		}
+		if _, ok := query.Parameters[ParamName]; !ok {
+			return fmt.Errorf("%w: missing required parameter 'name'", ErrInvalidQuery)
+		}
+	
+	// Transaction operations
+	case QueryTypeBeginTransaction:
+		// No required parameters
+	case QueryTypeCommitTransaction, QueryTypeRollbackTransaction:
+		// txId is optional - if not provided, the current active transaction will be used
 	}
 
 	return nil

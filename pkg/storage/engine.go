@@ -233,6 +233,11 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 	return engine, nil
 }
 
+// GetTransactionManager returns the transaction manager
+func (e *StorageEngine) GetTransactionManager() *TransactionManager {
+	return e.txManager
+}
+
 // Close closes the storage engine and all its resources
 func (e *StorageEngine) Close() error {
 	e.mu.Lock()

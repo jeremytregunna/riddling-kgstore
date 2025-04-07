@@ -89,8 +89,9 @@ KGStore includes a specialized property index for efficient lookups based on pro
 
 ## Query Language
 
-KGStore provides a simple but powerful query language for accessing graph data:
+KGStore provides a simple but powerful query language for both querying and manipulating graph data:
 
+### Read Operations
 ```
 FIND_NODES_BY_LABEL(label: "Person")
 FIND_EDGES_BY_LABEL(label: "KNOWS")
@@ -100,11 +101,32 @@ FIND_NEIGHBORS(nodeId: "1", direction: "outgoing")
 FIND_PATH(sourceId: "1", targetId: "2", maxHops: "3")
 ```
 
+### Data Manipulation Operations
+```
+CREATE_NODE(label: "Person")
+CREATE_EDGE(sourceId: "1", targetId: "2", label: "KNOWS")
+DELETE_NODE(nodeId: "1")
+DELETE_EDGE(edgeId: "e1")
+SET_PROPERTY(target: "node", id: "1", name: "name", value: "John Doe")
+SET_PROPERTY(target: "edge", id: "e1", name: "since", value: "2025-04-01")
+REMOVE_PROPERTY(target: "node", id: "1", name: "age")
+```
+
+### Transaction Management
+```
+BEGIN_TRANSACTION()
+COMMIT_TRANSACTION()
+ROLLBACK_TRANSACTION()
+```
+
 The query language supports:
 - Label-based lookups for nodes and edges
 - Property-based lookups with various value types
 - Neighborhood exploration with directional control
 - Path finding between nodes with configurable hop limits
+- Full CRUD operations (Create, Read, Update, Delete)
+- Explicit transaction control with commit and rollback capabilities
+- Auto-transaction support for single operations when not in an explicit transaction
 
 ## Usage Example
 
@@ -116,7 +138,6 @@ import (
     "log"
 
     "git.canoozie.net/riddling/kgstore/pkg/storage"
-    "git.canoozie.net/riddling/kgstore/pkg/model"
     "git.canoozie.net/riddling/kgstore/pkg/query"
 )
 
@@ -135,99 +156,130 @@ func main() {
     }
     defer engine.Close()
 
-    // Create a transaction
-    tx, err := engine.Begin()
-    if err != nil {
-        log.Fatalf("Failed to create transaction: %v", err)
+    // Create an executor for running queries
+    executor := query.NewExecutor(engine)
+
+    // Using query language with transactions
+    queries := []string{
+        // Start a transaction
+        "BEGIN_TRANSACTION()",
+        
+        // Create nodes
+        "CREATE_NODE(label: \"Person\")", // Returns node ID in results.EntityIDs[0]
+        "CREATE_NODE(label: \"Person\")", // Returns node ID in results.EntityIDs[0]
+        
+        // Set properties on nodes (assuming node IDs are "1" and "2" for simplicity)
+        "SET_PROPERTY(target: \"node\", id: \"1\", name: \"name\", value: \"John Doe\")",
+        "SET_PROPERTY(target: \"node\", id: \"2\", name: \"name\", value: \"Jane Smith\")",
+        
+        // Create an edge between nodes
+        "CREATE_EDGE(sourceId: \"1\", targetId: \"2\", label: \"KNOWS\")", // Returns edge ID
+        
+        // Set property on edge (assuming edge ID is "e1" for simplicity)
+        "SET_PROPERTY(target: \"edge\", id: \"e1\", name: \"since\", value: \"2025-04-01\")",
+        
+        // Commit the transaction
+        "COMMIT_TRANSACTION()"
     }
 
-    // Create nodes
-    person1, err := tx.CreateNode("Person")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to create node: %v", err)
-    }
-
-    person2, err := tx.CreateNode("Person")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to create node: %v", err)
-    }
-
-    // Add properties to nodes
-    err = person1.SetProperty("name", "John Doe")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to set property: %v", err)
-    }
-
-    err = person2.SetProperty("name", "Jane Smith")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to set property: %v", err)
-    }
-
-    // Create an edge between nodes
-    knows, err := tx.CreateEdge(person1, person2, "KNOWS")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to create edge: %v", err)
-    }
-
-    // Add property to the edge
-    err = knows.SetProperty("since", "2025-04-01")
-    if err != nil {
-        tx.Rollback()
-        log.Fatalf("Failed to set edge property: %v", err)
-    }
-
-    // Commit the transaction
-    if err := tx.Commit(); err != nil {
-        log.Fatalf("Failed to commit transaction: %v", err)
-    }
-
-    // Read data in a new transaction
-    readTx, err := engine.Begin()
-    if err != nil {
-        log.Fatalf("Failed to create read transaction: %v", err)
-    }
-    defer readTx.Rollback()
-
-    // Query for outgoing edges
-    edges, err := readTx.GetNodeOutgoingEdges(person1.ID(), "KNOWS")
-    if err != nil {
-        log.Fatalf("Failed to query edges: %v", err)
-    }
-
-    for _, edge := range edges {
-        target, err := readTx.GetNodeByID(edge.TargetID())
+    // Execute the transaction
+    var nodeID1, nodeID2, edgeID string
+    
+    for i, queryStr := range queries {
+        parsedQuery, err := query.Parse(queryStr)
         if err != nil {
-            log.Fatalf("Failed to get target node: %v", err)
+            log.Fatalf("Failed to parse query: %v", err)
         }
-
-        targetName, _ := target.GetProperty("name")
-        since, _ := edge.GetProperty("since")
-
-        fmt.Printf("%s KNOWS %s since %s\n",
-            person1.GetProperty("name"),
-            targetName,
-            since)
+        
+        results, err := executor.Execute(parsedQuery)
+        if err != nil {
+            log.Fatalf("Failed to execute query: %v", err)
+        }
+        
+        // Store IDs from creation operations for later use
+        if i == 1 && len(results.EntityIDs) > 0 {
+            nodeID1 = results.EntityIDs[0] // First node ID
+        } else if i == 2 && len(results.EntityIDs) > 0 {
+            nodeID2 = results.EntityIDs[0] // Second node ID
+        } else if i == 5 && len(results.EntityIDs) > 0 {
+            edgeID = results.EntityIDs[0] // Edge ID
+        }
     }
 
-    // Property-based query example
-    queryStr := "FIND_NODES_BY_PROPERTY(propertyName: \"name\", propertyValue: \"John Doe\")"
-    parsedQuery, err := query.Parse(queryStr)
+    // Querying data using the query language
+    
+    // Find outgoing edges from person1
+    findEdgesQuery := fmt.Sprintf("FIND_NEIGHBORS(nodeId: \"%s\", direction: \"outgoing\")", nodeID1)
+    parsedQuery, err := query.Parse(findEdgesQuery)
     if err != nil {
         log.Fatalf("Failed to parse query: %v", err)
     }
-
-    executor := query.NewExecutor(readTx)
+    
     results, err := executor.Execute(parsedQuery)
     if err != nil {
         log.Fatalf("Failed to execute query: %v", err)
     }
-
+    
+    // Process query results
+    if len(results.Edges) > 0 {
+        // For each edge found, get the target node details
+        for _, edge := range results.Edges {
+            // Get target node name using a property query
+            targetNodeQuery := fmt.Sprintf(
+                "FIND_NODES_BY_PROPERTY(propertyName: \"name\", propertyValue: \"Jane Smith\")")
+            parsedTargetQuery, _ := query.Parse(targetNodeQuery)
+            targetResults, _ := executor.Execute(parsedTargetQuery)
+            
+            if len(targetResults.Nodes) > 0 {
+                // Get edge property using a property query
+                edgePropQuery := fmt.Sprintf(
+                    "FIND_EDGES_BY_PROPERTY(propertyName: \"since\", propertyValue: \"2025-04-01\")")
+                parsedEdgePropQuery, _ := query.Parse(edgePropQuery)
+                edgePropResults, _ := executor.Execute(parsedEdgePropQuery)
+                
+                if len(edgePropResults.Edges) > 0 {
+                    fmt.Printf("John Doe KNOWS Jane Smith since 2025-04-01\n")
+                }
+            }
+        }
+    }
+    
+    // Property-based query example using the query language
+    queryStr := "FIND_NODES_BY_PROPERTY(propertyName: \"name\", propertyValue: \"John Doe\")"
+    parsedQuery, err = query.Parse(queryStr)
+    if err != nil {
+        log.Fatalf("Failed to parse query: %v", err)
+    }
+    
+    results, err = executor.Execute(parsedQuery)
+    if err != nil {
+        log.Fatalf("Failed to execute query: %v", err)
+    }
+    
     fmt.Printf("Found %d nodes with name 'John Doe'\n", len(results.Nodes))
+    
+    // Demonstration of rollback
+    rollbackQueries := []string{
+        "BEGIN_TRANSACTION()",
+        "CREATE_NODE(label: \"Person\")",
+        "SET_PROPERTY(target: \"node\", id: \"3\", name: \"name\", value: \"To Be Rolled Back\")",
+        "ROLLBACK_TRANSACTION()"
+    }
+    
+    for _, queryStr := range rollbackQueries {
+        parsedQuery, _ := query.Parse(queryStr)
+        _, err := executor.Execute(parsedQuery)
+        if err != nil {
+            log.Printf("Error executing query: %v", err)
+        }
+    }
+    
+    // Verify the rolled back data doesn't exist
+    verifyQuery := "FIND_NODES_BY_PROPERTY(propertyName: \"name\", propertyValue: \"To Be Rolled Back\")"
+    parsedVerifyQuery, _ := query.Parse(verifyQuery)
+    verifyResults, _ := executor.Execute(parsedVerifyQuery)
+    
+    fmt.Printf("Found %d nodes after rollback (should be 0)\n", len(verifyResults.Nodes))
 }
 ```
 
@@ -257,10 +309,29 @@ KGStore implements full ACID (Atomicity, Consistency, Isolation, Durability) com
 - **Isolation**: Transactions are isolated from each other's changes
 - **Durability**: Write-Ahead Logging ensures data safety even during crashes
 
+### Transaction Management
+
+KGStore provides both programmatic and query-language-based transaction support:
+
+- **Explicit Transactions**: Begin, commit, and rollback operations through the query language:
+  ```
+  BEGIN_TRANSACTION()
+  CREATE_NODE(label: "Person")
+  // ... more operations
+  COMMIT_TRANSACTION()  // or ROLLBACK_TRANSACTION() to undo all changes
+  ```
+
+- **Auto-Transactions**: Single operations automatically occur in their own transaction when not in an explicit transaction context
+
+- **Error Handling**: Automatic rollback when errors occur during transaction execution
+
+- **Transaction Registry**: Maintains active transactions and associates them with their unique IDs
+
 Enhanced ACID features include:
 - Transaction boundary support in the WAL
 - Configurable WAL replay options for recovery scenarios
 - Two-phase deletion mechanism for safe SSTable removal
+- Transaction lifecycle tracking for atomicity guarantees
 
 ## Performance Optimizations
 
