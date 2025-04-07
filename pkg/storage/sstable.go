@@ -564,7 +564,7 @@ func (sst *SSTable) buildFromEntries(entries [][]byte) error {
 			isDeleted := entries[i+3]
 
 			// If it's a tombstone and we're filtering, skip it
-			if isDeleted[0] != 0 {
+			if len(isDeleted) > 0 && isDeleted[0] != 0 {
 				// Skip this tombstone if we didn't request them
 				continue
 			}
