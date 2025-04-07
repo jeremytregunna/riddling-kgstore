@@ -319,5 +319,63 @@ func (m *LockFreeMemTable) Clear() {
 	m.logger.Info("LockFreeMemTable cleared")
 }
 
+// GetKeysWithPrefix returns all keys that start with the given prefix
+func (m *LockFreeMemTable) GetKeysWithPrefix(prefix []byte) [][]byte {
+	if prefix == nil {
+		return [][]byte{}
+	}
+
+	// Create a slice to hold the matching keys
+	keys := make([][]byte, 0)
+
+	// Use a more efficient way to search with a prefix in a concurrent structure
+	curr := m.skiplist.head.next[0]
+	prefixLen := len(prefix)
+
+	// Traverse all nodes at level 0
+	for curr != nil && curr != m.skiplist.tail {
+		// Skip physically deleted nodes
+		if atomic.LoadUint32(&curr.marked) == 1 {
+			curr = curr.next[0]
+			continue
+		}
+
+		// Skip logically deleted nodes
+		if atomic.LoadUint32(&curr.isDeleted) == 1 {
+			curr = curr.next[0]
+			continue
+		}
+
+		// Check if this key has the prefix
+		if curr.key != nil && len(curr.key) >= prefixLen {
+			hasPrefix := true
+			for i := 0; i < prefixLen; i++ {
+				if curr.key[i] != prefix[i] {
+					hasPrefix = false
+					break
+				}
+			}
+
+			if hasPrefix {
+				// Create a copy of the key to avoid race conditions
+				keyCopy := make([]byte, len(curr.key))
+				copy(keyCopy, curr.key)
+				keys = append(keys, keyCopy)
+			}
+
+			// If the key is already greater than the prefix, we can stop
+			// (assuming keys are sorted lexicographically)
+			if len(curr.key) >= prefixLen && m.comparator(curr.key[:prefixLen], prefix) > 0 {
+				break
+			}
+		}
+
+		// Move to next node
+		curr = curr.next[0]
+	}
+
+	return keys
+}
+
 // Ensure LockFreeMemTable implements the MemTableInterface
 var _ MemTableInterface = (*LockFreeMemTable)(nil)

@@ -57,6 +57,7 @@ The standard MemTable implementation uses a traditional skiplist with mutex-base
 - Readers must acquire a read lock
 - Simpler implementation and debugging
 - Lower memory overhead (no atomic operation overhead)
+- Efficient key scanning with prefix matching
 
 ### LockFreeMemTable
 
@@ -66,6 +67,16 @@ The lock-free implementation uses a concurrent skiplist with atomic operations:
 - No locks for read operations
 - More complex implementation with careful handling of atomicity
 - May use more memory for atomic operation support
+- Prefix-based key scanning with atomic safety guarantees
+
+### Key Scanning
+
+Both implementations support key scanning via the `GetKeysWithPrefix` method, which returns all keys that start with a given prefix. This is particularly useful for:
+
+- Finding all outgoing or incoming edges for a node
+- Discovering all keys with a specific pattern
+- Implementing range queries
+- Supporting neighbor search functionality in graph operations
 
 ## WAL Considerations
 

@@ -3,6 +3,7 @@ package query
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"git.canoozie.net/riddling/kgstore/pkg/model"
@@ -17,11 +18,12 @@ type Result struct {
 	Error string       `json:"error,omitempty"`
 
 	// Fields for data modification operations
-	NodeID    string `json:"nodeId,omitempty"`    // Created node ID
-	EdgeID    string `json:"edgeId,omitempty"`    // Created edge ID
-	Success   bool   `json:"success,omitempty"`   // Operation success flag
-	TxID      string `json:"txId,omitempty"`      // Transaction ID
-	Operation string `json:"operation,omitempty"` // Operation performed
+	NodeID    string   `json:"nodeId,omitempty"`    // Created node ID
+	EdgeID    string   `json:"edgeId,omitempty"`    // Created edge ID
+	Success   bool     `json:"success,omitempty"`   // Operation success flag
+	TxID      string   `json:"txId,omitempty"`      // Transaction ID
+	Operation string   `json:"operation,omitempty"` // Operation performed
+	EntityIDs []string `json:"entityIds,omitempty"` // Entity IDs created/modified
 }
 
 // Path represents a path in the graph
@@ -51,6 +53,8 @@ type TransactionRegistry struct {
 	transactions map[string]*storage.Transaction
 	nextID       int64
 	activeAutoTx map[string]*storage.Transaction // Map of goroutine ID to auto transaction
+	// Entity tracking maps to store IDs created within transactions
+	txEntities map[string]map[string]string // Maps tx_id -> entity_ref -> entity_id
 }
 
 // NewTransactionRegistry creates a new transaction registry
@@ -59,6 +63,7 @@ func NewTransactionRegistry() *TransactionRegistry {
 		transactions: make(map[string]*storage.Transaction),
 		nextID:       1,
 		activeAutoTx: make(map[string]*storage.Transaction),
+		txEntities:   make(map[string]map[string]string),
 	}
 }
 
@@ -187,6 +192,43 @@ func (e *Executor) RollbackTransaction(txID string) error {
 	delete(e.txRegistry.transactions, txID)
 
 	return nil
+}
+
+// StoreEntityInTransaction stores an entity ID with a reference name in a transaction
+func (e *Executor) StoreEntityInTransaction(txID string, refName string, entityID string) {
+	if txID == "" {
+		return // Don't store for auto-transactions
+	}
+
+	e.txRegistry.mu.Lock()
+	defer e.txRegistry.mu.Unlock()
+
+	// Initialize the entity map for this transaction if needed
+	if _, exists := e.txRegistry.txEntities[txID]; !exists {
+		e.txRegistry.txEntities[txID] = make(map[string]string)
+	}
+
+	// Store the entity ID with its reference name
+	e.txRegistry.txEntities[txID][refName] = entityID
+}
+
+// GetEntityFromTransaction retrieves an entity ID by its reference name from a transaction
+func (e *Executor) GetEntityFromTransaction(txID string, refName string) (string, bool) {
+	if txID == "" {
+		return "", false
+	}
+
+	e.txRegistry.mu.RLock()
+	defer e.txRegistry.mu.RUnlock()
+
+	// Check if the transaction and entity exist
+	entitiesMap, txExists := e.txRegistry.txEntities[txID]
+	if !txExists {
+		return "", false
+	}
+
+	entityID, entityExists := entitiesMap[refName]
+	return entityID, entityExists
 }
 
 // GetTransaction gets a transaction by ID
@@ -361,6 +403,15 @@ func (e *Executor) executeCreateNode(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("failed to create node: %w", err)
 	}
 
+	// Store node ID in transaction registry with a reference name if one was provided
+	if refName, refExists := query.Parameters["ref"]; refExists && txIDParam != "" {
+		e.StoreEntityInTransaction(txIDParam, refName, nodeID)
+	} else {
+		// Auto-generate a reference name based on the label if none provided
+		autoRef := fmt.Sprintf("%s_%s", label, nodeID)
+		e.StoreEntityInTransaction(txIDParam, autoRef, nodeID)
+	}
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
@@ -373,6 +424,7 @@ func (e *Executor) executeCreateNode(query *Query) (*Result, error) {
 		Success:   true,
 		Operation: "CREATE_NODE",
 		TxID:      txIDParam,
+		EntityIDs: []string{nodeID}, // Add node ID to entity IDs for use in subsequent queries
 	}, nil
 }
 
@@ -382,12 +434,20 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("graph store not available")
 	}
 
-	// Get required parameters
-	sourceID, ok := query.Parameters[ParamSource]
-	if !ok {
-		return nil, fmt.Errorf("missing required parameter 'source'")
+	// Get source ID - check both sourceId and source parameters
+	var sourceID string
+	var ok bool
+
+	// First check for sourceId parameter (preferred)
+	if sourceID, ok = query.Parameters[ParamSourceID]; !ok {
+		// If not found, try the source parameter (legacy)
+		if sourceID, ok = query.Parameters[ParamSource]; !ok {
+			// If still not found, return error
+			return nil, fmt.Errorf("missing required parameter 'sourceId' or 'source'")
+		}
 	}
 
+	// Get target ID
 	targetID, ok := query.Parameters[ParamTargetID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'targetId'")
@@ -400,6 +460,29 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
+
+	// Check if sourceID/targetID are references to previously created entities in this transaction
+	if txIDParam != "" {
+		// Check if sourceID is referencing an entity by using $ref: syntax
+		if len(sourceID) > 0 && sourceID[0] == '$' {
+			refName := sourceID[1:] // Remove the $ prefix
+			if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+				sourceID = actualID
+			} else {
+				return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+			}
+		}
+
+		// Check if targetID is referencing an entity by using $ref: syntax
+		if len(targetID) > 0 && targetID[0] == '$' {
+			refName := targetID[1:] // Remove the $ prefix
+			if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+				targetID = actualID
+			} else {
+				return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+			}
+		}
+	}
 
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
@@ -417,6 +500,15 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("failed to create edge: %w", err)
 	}
 
+	// Store edge ID in transaction registry with a reference name if one was provided
+	if refName, refExists := query.Parameters["ref"]; refExists && txIDParam != "" {
+		e.StoreEntityInTransaction(txIDParam, refName, edgeID)
+	} else {
+		// Auto-generate a reference name based on the label if none provided
+		autoRef := fmt.Sprintf("%s_%s", label, edgeID)
+		e.StoreEntityInTransaction(txIDParam, autoRef, edgeID)
+	}
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
@@ -429,6 +521,7 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 		Success:   true,
 		Operation: "CREATE_EDGE",
 		TxID:      txIDParam,
+		EntityIDs: []string{edgeID}, // Add edge ID to entity IDs for use in subsequent queries
 	}, nil
 }
 
@@ -446,6 +539,16 @@ func (e *Executor) executeDeleteNode(query *Query) (*Result, error) {
 
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
+
+	// Resolve ID if it's a reference
+	if txIDParam != "" && len(nodeID) > 0 && nodeID[0] == '$' {
+		refName := nodeID[1:] // Remove the $ prefix
+		if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+			nodeID = actualID
+		} else {
+			return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+		}
+	}
 
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
@@ -492,6 +595,16 @@ func (e *Executor) executeDeleteEdge(query *Query) (*Result, error) {
 
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
+
+	// Resolve ID if it's a reference
+	if txIDParam != "" && len(edgeID) > 0 && edgeID[0] == '$' {
+		refName := edgeID[1:] // Remove the $ prefix
+		if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+			edgeID = actualID
+		} else {
+			return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+		}
+	}
 
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
@@ -541,6 +654,19 @@ func (e *Executor) executeSetProperty(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
 
+	// Get transaction ID from parameters if provided
+	txIDParam, _ := query.Parameters[ParamTransactionID]
+
+	// Resolve ID if it's a reference
+	if txIDParam != "" && len(id) > 0 && id[0] == '$' {
+		refName := id[1:] // Remove the $ prefix
+		if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+			id = actualID
+		} else {
+			return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+		}
+	}
+
 	name, ok := query.Parameters[ParamName]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'name'")
@@ -550,9 +676,6 @@ func (e *Executor) executeSetProperty(query *Query) (*Result, error) {
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'value'")
 	}
-
-	// Get transaction ID from parameters if provided
-	txIDParam, _ := query.Parameters[ParamTransactionID]
 
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
@@ -621,13 +744,23 @@ func (e *Executor) executeRemoveProperty(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
 
+	// Get transaction ID from parameters if provided
+	txIDParam, _ := query.Parameters[ParamTransactionID]
+
+	// Resolve ID if it's a reference
+	if txIDParam != "" && len(id) > 0 && id[0] == '$' {
+		refName := id[1:] // Remove the $ prefix
+		if actualID, exists := e.GetEntityFromTransaction(txIDParam, refName); exists {
+			id = actualID
+		} else {
+			return nil, fmt.Errorf("referenced entity '%s' not found in transaction", refName)
+		}
+	}
+
 	name, ok := query.Parameters[ParamName]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'name'")
 	}
-
-	// Get transaction ID from parameters if provided
-	txIDParam, _ := query.Parameters[ParamTransactionID]
 
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
@@ -684,64 +817,57 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
 
 	// Get node IDs for the label
-	key := []byte(label)
+	// The index's GetAll method will apply the appropriate prefix
 	var nodeIDsBytes [][]byte
 	var err error
 
-	// Use LSM-based node label index if available
-	if e.NodeLabels.GetType() == storage.IndexTypeNodeLabel {
-		// Get all node IDs for this label
-		nodeIDsBytes, err = e.NodeLabels.GetAll(key)
-		if err != nil && err != storage.ErrKeyNotFound {
-			return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
-		}
+	// Add debug log to see what label we're looking for
+	e.Engine.GetLogger().Debug("Searching for nodes with label: %s", label)
 
-		// If no nodes found with this label
-		if err == storage.ErrKeyNotFound || len(nodeIDsBytes) == 0 {
-			return &Result{Nodes: []model.Node{}}, nil
-		}
-	} else {
-		// Fallback to original implementation for backwards compatibility
-		singleIDBytes, err := e.NodeLabels.Get(key)
-		if err != nil {
-			if err == storage.ErrKeyNotFound {
-				// No nodes with this label
-				return &Result{Nodes: []model.Node{}}, nil
-			}
-			return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
-		}
+	// Get all node IDs for this label (LSM or regular index)
+	nodeIDsBytes, err = e.NodeLabels.GetAll([]byte(label))
+	if err != nil && err != storage.ErrKeyNotFound {
+		return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
+	}
 
-		// Deserialize node IDs using original format
-		var nodeIDs []uint64
-		err = model.Deserialize(singleIDBytes, &nodeIDs)
-		if err != nil {
-			return nil, fmt.Errorf("error deserializing node IDs: %w", err)
-		}
-
-		// Convert to byte arrays for consistent processing
-		nodeIDsBytes = make([][]byte, len(nodeIDs))
-		for i, id := range nodeIDs {
-			nodeIDsBytes[i] = []byte(fmt.Sprintf("%d", id))
-		}
+	// If no nodes found with this label
+	if err == storage.ErrKeyNotFound || len(nodeIDsBytes) == 0 {
+		e.Engine.GetLogger().Debug("No nodes found with label: %s", label)
+		return &Result{Nodes: []model.Node{}}, nil
 	}
 
 	// Get nodes
 	nodes := make([]model.Node, 0, len(nodeIDsBytes))
-	for _, idBytes := range nodeIDsBytes {
+	e.Engine.GetLogger().Debug("Found %d node IDs for label: %s, preparing to retrieve them", len(nodeIDsBytes), label)
+
+	for i, idBytes := range nodeIDsBytes {
 		// Convert to uint64 if it's not already
 		idStr := string(idBytes)
+		e.Engine.GetLogger().Debug("Processing node ID %d/%d: %s", i+1, len(nodeIDsBytes), idStr)
+
 		id, err := strconv.ParseUint(idStr, 10, 64)
 		if err != nil {
 			// Skip invalid IDs
+			e.Engine.GetLogger().Debug("Invalid node ID format for %s: %v", idStr, err)
 			continue
 		}
 
-		key := []byte(fmt.Sprintf("node:%d", id))
-		nodeBytes, err := e.NodeIndex.Get(key)
+		// Try both formats for node lookup to fix compatibility issues
+		keyWithPrefix := []byte(FormatNodeKey(id))
+		e.Engine.GetLogger().Debug("Looking up node with formatted key: %s", string(keyWithPrefix))
+
+		nodeBytes, err := e.NodeIndex.Get(keyWithPrefix)
+		if err != nil {
+			// If not found with prefix, try just the ID as a string
+			keyWithoutPrefix := []byte(fmt.Sprintf("%d", id))
+			e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(keyWithPrefix), string(keyWithoutPrefix))
+			nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+		}
 		if err != nil {
 			if err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting node %d: %w", id, err)
 			}
+			e.Engine.GetLogger().Debug("Node with ID %d not found in node index", id)
 			continue
 		}
 
@@ -751,8 +877,11 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 			return nil, fmt.Errorf("error deserializing node %d: %w", id, err)
 		}
 
+		e.Engine.GetLogger().Debug("Successfully retrieved node %d with label %s", id, node.Label)
 		nodes = append(nodes, node)
 	}
+
+	e.Engine.GetLogger().Debug("Retrieved %d/%d nodes with label: %s", len(nodes), len(nodeIDsBytes), label)
 
 	return &Result{Nodes: nodes}, nil
 }
@@ -762,52 +891,50 @@ func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
 
 	// Get edge IDs for the label
-	key := []byte(label)
+	// The index's GetAll method will apply the appropriate prefix
 	var edgeIDsBytes [][]byte
 	var err error
 
+	// Add debug log
+	e.Engine.GetLogger().Debug("Searching for edges with label: %s", label)
+
 	// Try to get all edge IDs from the index
-	edgeIDsBytes, err = e.EdgeLabels.GetAll(key)
+	edgeIDsBytes, err = e.EdgeLabels.GetAll([]byte(label))
 	if err != nil && err != storage.ErrKeyNotFound {
 		return nil, fmt.Errorf("error getting edges for label %s: %w", label, err)
 	}
 
-	// If no edges found with this label or we need to use old format
+	// If no edges found with this label
 	if err == storage.ErrKeyNotFound || len(edgeIDsBytes) == 0 {
-		// Fallback to legacy format if needed
-		singleIDBytes, err := e.EdgeLabels.Get(key)
-		if err != nil {
-			if err == storage.ErrKeyNotFound {
-				// No edges with this label
-				return &Result{Edges: []model.Edge{}}, nil
-			}
-			return nil, fmt.Errorf("error getting edges for label %s: %w", label, err)
-		}
-
-		// Deserialize edge IDs using original format
-		var edgeIDs []string
-		err = model.Deserialize(singleIDBytes, &edgeIDs)
-		if err != nil {
-			return nil, fmt.Errorf("error deserializing edge IDs: %w", err)
-		}
-
-		// Convert to byte arrays for consistent processing
-		edgeIDsBytes = make([][]byte, len(edgeIDs))
-		for i, id := range edgeIDs {
-			edgeIDsBytes[i] = []byte(id)
-		}
+		e.Engine.GetLogger().Debug("No edges found with label: %s", label)
+		return &Result{Edges: []model.Edge{}}, nil
 	}
 
 	// Get edges
 	edges := make([]model.Edge, 0, len(edgeIDsBytes))
-	for _, idBytes := range edgeIDsBytes {
+	e.Engine.GetLogger().Debug("Found %d edge IDs for label: %s, preparing to retrieve them", len(edgeIDsBytes), label)
+
+	for i, idBytes := range edgeIDsBytes {
 		id := string(idBytes)
-		key := []byte(fmt.Sprintf("edge:%s", id))
+		e.Engine.GetLogger().Debug("Processing edge ID %d/%d: %s", i+1, len(edgeIDsBytes), id)
+
+		// Try with prefix first
+		key := []byte(FormatEdgeKey(id))
+		e.Engine.GetLogger().Debug("Looking up edge with formatted key: %s", string(key))
+
 		edgeBytes, err := e.EdgeIndex.Get(key)
+		if err != nil {
+			// If not found with prefix, try just the ID as a string (compatibility)
+			keyWithoutPrefix := []byte(id)
+			e.Engine.GetLogger().Debug("Edge not found with key %s, trying alternate key: %s", string(key), id)
+			edgeBytes, err = e.EdgeIndex.Get(keyWithoutPrefix)
+		}
+
 		if err != nil {
 			if err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting edge %s: %w", id, err)
 			}
+			e.Engine.GetLogger().Debug("Edge with ID %s not found in edge index", id)
 			continue
 		}
 
@@ -817,8 +944,11 @@ func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 			return nil, fmt.Errorf("error deserializing edge %s: %w", id, err)
 		}
 
+		e.Engine.GetLogger().Debug("Successfully retrieved edge %s with label %s", id, edge.Label)
 		edges = append(edges, edge)
 	}
+
+	e.Engine.GetLogger().Debug("Retrieved %d/%d edges with label: %s", len(edges), len(edgeIDsBytes), label)
 
 	return &Result{Edges: edges}, nil
 }
@@ -845,7 +975,7 @@ func (e *Executor) executeNodesByProperty(query *Query) (*Result, error) {
 
 	// Get all nodes by scanning through them directly
 	for i := uint64(1); i <= 10; i++ { // Check first 10 node IDs as a simple approach
-		key := []byte(fmt.Sprintf("node:%d", i))
+		key := []byte(FormatNodeKey(i))
 		nodeBytes, err := e.NodeIndex.Get(key)
 		if err != nil {
 			if err == storage.ErrKeyNotFound {
@@ -896,7 +1026,7 @@ func (e *Executor) executeEdgesByProperty(query *Query) (*Result, error) {
 
 	// Check each edge
 	for _, edgeID := range testEdgeIDs {
-		key := []byte(fmt.Sprintf("edge:%s", edgeID))
+		key := []byte(FormatEdgeKey(edgeID))
 		edgeBytes, err := e.EdgeIndex.Get(key)
 		if err != nil {
 			if err == storage.ErrKeyNotFound {
@@ -934,8 +1064,17 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 	}
 
 	// Get the node first to ensure it exists
-	key := []byte(fmt.Sprintf("node:%d", nodeID))
+	key := []byte(FormatNodeKey(nodeID))
+	e.Engine.GetLogger().Debug("Looking for node with formatted key: %s", string(key))
+
 	nodeBytes, err := e.NodeIndex.Get(key)
+	if err != nil {
+		// If not found with prefix, try just the ID as a string (compatibility)
+		keyWithoutPrefix := []byte(fmt.Sprintf("%d", nodeID))
+		e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(key), string(keyWithoutPrefix))
+		nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+	}
+
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("node not found: %d", nodeID)
@@ -952,52 +1091,133 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 	// Find all edges where this node is the source or target
 	var edgeIDs []string
 	if direction == DirectionOutgoing || direction == DirectionBoth {
-		// Get outgoing edges
-		outKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
-		outEdgeIDsBytes, err := e.EdgeIndex.Get(outKey)
-		if err != nil && err != storage.ErrKeyNotFound {
-			return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", nodeID, err)
+		// Try different key formats and access patterns
+		e.Engine.GetLogger().Debug("=== START OUTGOING EDGES SEARCH FOR NODE %d ===", nodeID)
+
+		// Try the source node prefix approach first (sn:nodeID)
+		outKey := []byte(fmt.Sprintf("sn:%d", nodeID))
+		e.Engine.GetLogger().Debug("Looking for outgoing edges with key pattern 1: %s", string(outKey))
+
+		// Instead of a direct Get, try to scan for keys with the prefix
+		snKeyPrefix := fmt.Sprintf("sn:%d:", nodeID)
+		e.Engine.GetLogger().Debug("Scanning for keys with prefix: %s", snKeyPrefix)
+		snMatchingKeys, err := e.Engine.Scan([]byte(snKeyPrefix), 100)
+		if err != nil {
+			e.Engine.GetLogger().Debug("Error scanning for sn prefix keys: %v", err)
+		} else if len(snMatchingKeys) > 0 {
+			e.Engine.GetLogger().Debug("Found %d keys matching source node prefix pattern", len(snMatchingKeys))
+			for i, key := range snMatchingKeys {
+				parts := strings.Split(string(key), ":")
+				if len(parts) >= 3 {
+					edgeID := parts[2]
+					e.Engine.GetLogger().Debug("Extracted edge ID %d from key %s: %s", i, string(key), edgeID)
+					edgeIDs = append(edgeIDs, edgeID)
+				}
+			}
+		} else {
+			e.Engine.GetLogger().Debug("No keys found matching source node prefix pattern")
 		}
 
-		if err == nil {
+		// Next, try the outgoing:nodeID direct list approach
+		altOutKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
+		e.Engine.GetLogger().Debug("Looking for outgoing edges with key pattern 2: %s", string(altOutKey))
+		outEdgeIDsBytes, err := e.Engine.Get(altOutKey)
+
+		if err != nil && err != storage.ErrKeyNotFound {
+			e.Engine.GetLogger().Debug("Error getting outgoing edges list: %v", err)
+		} else if err == nil {
 			var outEdgeIDs []string
 			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
 			if err != nil {
-				return nil, fmt.Errorf("error deserializing outgoing edge IDs: %w", err)
+				e.Engine.GetLogger().Debug("Error deserializing outgoing edge IDs: %v", err)
+			} else {
+				e.Engine.GetLogger().Debug("Found %d outgoing edges in deserialized list: %v", len(outEdgeIDs), outEdgeIDs)
+				edgeIDs = append(edgeIDs, outEdgeIDs...)
 			}
-			edgeIDs = append(edgeIDs, outEdgeIDs...)
+		} else {
+			e.Engine.GetLogger().Debug("No outgoing edges list found for key: %s", string(altOutKey))
 		}
+
+		e.Engine.GetLogger().Debug("=== END OUTGOING EDGES SEARCH FOR NODE %d ===", nodeID)
 	}
 
 	if direction == DirectionIncoming || direction == DirectionBoth {
-		// Get incoming edges
-		inKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
-		inEdgeIDsBytes, err := e.EdgeIndex.Get(inKey)
-		if err != nil && err != storage.ErrKeyNotFound {
-			return nil, fmt.Errorf("error getting incoming edges for node %d: %w", nodeID, err)
+		// Try different key formats and access patterns for incoming edges
+		e.Engine.GetLogger().Debug("=== START INCOMING EDGES SEARCH FOR NODE %d ===", nodeID)
+
+		// Try the target node prefix approach first (tn:nodeID)
+		inKey := []byte(fmt.Sprintf("tn:%d", nodeID))
+		e.Engine.GetLogger().Debug("Looking for incoming edges with key pattern 1: %s", string(inKey))
+
+		// Instead of a direct Get, try to scan for keys with the prefix
+		tnKeyPrefix := fmt.Sprintf("tn:%d:", nodeID)
+		e.Engine.GetLogger().Debug("Scanning for keys with prefix: %s", tnKeyPrefix)
+		tnMatchingKeys, err := e.Engine.Scan([]byte(tnKeyPrefix), 100)
+		if err != nil {
+			e.Engine.GetLogger().Debug("Error scanning for tn prefix keys: %v", err)
+		} else if len(tnMatchingKeys) > 0 {
+			e.Engine.GetLogger().Debug("Found %d keys matching target node prefix pattern", len(tnMatchingKeys))
+			for i, key := range tnMatchingKeys {
+				parts := strings.Split(string(key), ":")
+				if len(parts) >= 3 {
+					edgeID := parts[2]
+					e.Engine.GetLogger().Debug("Extracted edge ID %d from key %s: %s", i, string(key), edgeID)
+					edgeIDs = append(edgeIDs, edgeID)
+				}
+			}
+		} else {
+			e.Engine.GetLogger().Debug("No keys found matching target node prefix pattern")
 		}
 
-		if err == nil {
+		// Next, try the incoming:nodeID direct list approach
+		altInKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
+		e.Engine.GetLogger().Debug("Looking for incoming edges with key pattern 2: %s", string(altInKey))
+		inEdgeIDsBytes, err := e.Engine.Get(altInKey)
+
+		if err != nil && err != storage.ErrKeyNotFound {
+			e.Engine.GetLogger().Debug("Error getting incoming edges list: %v", err)
+		} else if err == nil {
 			var inEdgeIDs []string
 			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
 			if err != nil {
-				return nil, fmt.Errorf("error deserializing incoming edge IDs: %w", err)
+				e.Engine.GetLogger().Debug("Error deserializing incoming edge IDs: %v", err)
+			} else {
+				e.Engine.GetLogger().Debug("Found %d incoming edges in deserialized list: %v", len(inEdgeIDs), inEdgeIDs)
+				edgeIDs = append(edgeIDs, inEdgeIDs...)
 			}
-			edgeIDs = append(edgeIDs, inEdgeIDs...)
+		} else {
+			e.Engine.GetLogger().Debug("No incoming edges list found for key: %s", string(altInKey))
 		}
+
+		e.Engine.GetLogger().Debug("=== END INCOMING EDGES SEARCH FOR NODE %d ===", nodeID)
 	}
+
+	e.Engine.GetLogger().Debug("Found a total of %d edges connected to node %d", len(edgeIDs), nodeID)
 
 	// Get the edges
 	edges := make([]model.Edge, 0, len(edgeIDs))
 	nodeIDs := make(map[uint64]bool) // Unique neighbor IDs
 
-	for _, id := range edgeIDs {
-		edgeKey := []byte(fmt.Sprintf("edge:%s", id))
+	for i, id := range edgeIDs {
+		e.Engine.GetLogger().Debug("Processing edge %d/%d: %s", i+1, len(edgeIDs), id)
+
+		// Try with prefix first
+		edgeKey := []byte(FormatEdgeKey(id))
+		e.Engine.GetLogger().Debug("Looking up edge with formatted key: %s", string(edgeKey))
+
 		edgeBytes, err := e.EdgeIndex.Get(edgeKey)
+		if err != nil {
+			// If not found with prefix, try just the ID as a string (compatibility)
+			keyWithoutPrefix := []byte(id)
+			e.Engine.GetLogger().Debug("Edge not found with key %s, trying alternate key: %s", string(edgeKey), id)
+			edgeBytes, err = e.EdgeIndex.Get(keyWithoutPrefix)
+		}
+
 		if err != nil {
 			if err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting edge %s: %w", id, err)
 			}
+			e.Engine.GetLogger().Debug("Edge with ID %s not found in edge index", id)
 			continue
 		}
 
@@ -1007,25 +1227,43 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 			return nil, fmt.Errorf("error deserializing edge %s: %w", id, err)
 		}
 
+		e.Engine.GetLogger().Debug("Found edge from %d to %d with label %s", edge.SourceID, edge.TargetID, edge.Label)
 		edges = append(edges, edge)
 
 		// Add neighbor node ID
 		if edge.SourceID == nodeID {
 			nodeIDs[edge.TargetID] = true
+			e.Engine.GetLogger().Debug("Adding target node %d as neighbor", edge.TargetID)
 		} else if edge.TargetID == nodeID {
 			nodeIDs[edge.SourceID] = true
+			e.Engine.GetLogger().Debug("Adding source node %d as neighbor", edge.SourceID)
 		}
 	}
 
 	// Get the neighbor nodes
 	nodes := make([]model.Node, 0, len(nodeIDs))
+	e.Engine.GetLogger().Debug("Found %d unique neighbor nodes, retrieving them", len(nodeIDs))
+
 	for id := range nodeIDs {
-		nodeKey := []byte(fmt.Sprintf("node:%d", id))
+		e.Engine.GetLogger().Debug("Looking up neighbor node %d", id)
+
+		// Try with prefix first
+		nodeKey := []byte(FormatNodeKey(id))
+		e.Engine.GetLogger().Debug("Looking up node with formatted key: %s", string(nodeKey))
+
 		nodeBytes, err := e.NodeIndex.Get(nodeKey)
+		if err != nil {
+			// If not found with prefix, try just the ID as a string (compatibility)
+			keyWithoutPrefix := []byte(fmt.Sprintf("%d", id))
+			e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(nodeKey), string(keyWithoutPrefix))
+			nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+		}
+
 		if err != nil {
 			if err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting node %d: %w", id, err)
 			}
+			e.Engine.GetLogger().Debug("Neighbor node %d not found in node index", id)
 			continue
 		}
 
@@ -1035,8 +1273,11 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 			return nil, fmt.Errorf("error deserializing node %d: %w", id, err)
 		}
 
+		e.Engine.GetLogger().Debug("Successfully retrieved neighbor node %d with label %s", id, node.Label)
 		nodes = append(nodes, node)
 	}
+
+	e.Engine.GetLogger().Debug("Retrieved %d/%d neighbor nodes", len(nodes), len(nodeIDs))
 
 	return &Result{Nodes: nodes, Edges: edges}, nil
 }
@@ -1064,8 +1305,17 @@ func (e *Executor) executePath(query *Query) (*Result, error) {
 	}
 
 	// Get the source and target nodes first to ensure they exist
-	sourceKey := []byte(fmt.Sprintf("node:%d", sourceID))
+	sourceKey := []byte(FormatNodeKey(sourceID))
+	e.Engine.GetLogger().Debug("Looking for source node with formatted key: %s", string(sourceKey))
+
 	sourceBytes, err := e.NodeIndex.Get(sourceKey)
+	if err != nil {
+		// If not found with prefix, try just the ID as a string (compatibility)
+		keyWithoutPrefix := []byte(fmt.Sprintf("%d", sourceID))
+		e.Engine.GetLogger().Debug("Source node not found with key %s, trying alternate key: %s", string(sourceKey), string(keyWithoutPrefix))
+		sourceBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+	}
+
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("source node not found: %d", sourceID)
@@ -1079,8 +1329,17 @@ func (e *Executor) executePath(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("error deserializing source node %d: %w", sourceID, err)
 	}
 
-	targetKey := []byte(fmt.Sprintf("node:%d", targetID))
+	targetKey := []byte(FormatNodeKey(targetID))
+	e.Engine.GetLogger().Debug("Looking for target node with formatted key: %s", string(targetKey))
+
 	targetBytes, err := e.NodeIndex.Get(targetKey)
+	if err != nil {
+		// If not found with prefix, try just the ID as a string (compatibility)
+		keyWithoutPrefix := []byte(fmt.Sprintf("%d", targetID))
+		e.Engine.GetLogger().Debug("Target node not found with key %s, trying alternate key: %s", string(targetKey), string(keyWithoutPrefix))
+		targetBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+	}
+
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("target node not found: %d", targetID)
@@ -1112,7 +1371,7 @@ func (e *Executor) executePath(query *Query) (*Result, error) {
 func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, error) {
 	if sourceID == targetID {
 		// Source and target are the same node
-		sourceKey := []byte(fmt.Sprintf("node:%d", sourceID))
+		sourceKey := []byte(FormatNodeKey(sourceID))
 		sourceBytes, err := e.NodeIndex.Get(sourceKey)
 		if err != nil {
 			return nil, fmt.Errorf("error getting node %d: %w", sourceID, err)
@@ -1168,7 +1427,7 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 
 				// Process each outgoing edge
 				for _, edgeID := range outEdgeIDs {
-					edgeKey := []byte(fmt.Sprintf("edge:%s", edgeID))
+					edgeKey := []byte(FormatEdgeKey(edgeID))
 					edgeBytes, err := e.EdgeIndex.Get(edgeKey)
 					if err != nil {
 						if err != storage.ErrKeyNotFound {
@@ -1229,7 +1488,7 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 
 				// Process each incoming edge
 				for _, edgeID := range inEdgeIDs {
-					edgeKey := []byte(fmt.Sprintf("edge:%s", edgeID))
+					edgeKey := []byte(FormatEdgeKey(edgeID))
 					edgeBytes, err := e.EdgeIndex.Get(edgeKey)
 					if err != nil {
 						if err != storage.ErrKeyNotFound {
@@ -1290,9 +1549,18 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	// Start from the target and work backwards
 	currentID := targetID
 	for currentID != sourceID {
-		// Get the node
-		nodeKey := []byte(fmt.Sprintf("node:%d", currentID))
+		// Get the node - try with prefix first
+		nodeKey := []byte(FormatNodeKey(currentID))
+		e.Engine.GetLogger().Debug("Looking up path node with formatted key: %s", string(nodeKey))
+
 		nodeBytes, err := e.NodeIndex.Get(nodeKey)
+		if err != nil {
+			// If not found with prefix, try just the ID as a string (compatibility)
+			keyWithoutPrefix := []byte(fmt.Sprintf("%d", currentID))
+			e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(nodeKey), string(keyWithoutPrefix))
+			nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("error getting node %d: %w", currentID, err)
 		}
@@ -1315,8 +1583,17 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	}
 
 	// Add the source node at the beginning
-	sourceNodeKey := []byte(fmt.Sprintf("node:%d", sourceID))
+	sourceNodeKey := []byte(FormatNodeKey(sourceID))
+	e.Engine.GetLogger().Debug("Looking up source node with formatted key: %s", string(sourceNodeKey))
+
 	sourceNodeBytes, err := e.NodeIndex.Get(sourceNodeKey)
+	if err != nil {
+		// If not found with prefix, try just the ID as a string (compatibility)
+		keyWithoutPrefix := []byte(fmt.Sprintf("%d", sourceID))
+		e.Engine.GetLogger().Debug("Source node not found with key %s, trying alternate key: %s", string(sourceNodeKey), string(keyWithoutPrefix))
+		sourceNodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("error getting node %d: %w", sourceID, err)
 	}
@@ -1326,6 +1603,8 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	if err != nil {
 		return nil, fmt.Errorf("error deserializing node %d: %w", sourceID, err)
 	}
+
+	e.Engine.GetLogger().Debug("Successfully retrieved source node %d with label %s", sourceID, sourceNode.Label)
 
 	path.Nodes = append([]model.Node{sourceNode}, path.Nodes...)
 

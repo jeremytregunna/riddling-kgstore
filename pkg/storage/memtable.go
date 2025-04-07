@@ -43,6 +43,7 @@ type MemTableInterface interface {
 	IsFlushed() bool
 	GetEntries() [][]byte
 	GetEntriesWithMetadata() [][]byte
+	GetKeysWithPrefix(prefix []byte) [][]byte // Returns all keys that start with the given prefix
 	GetVersion() uint64
 	Clear()
 }
@@ -538,6 +539,60 @@ func (m *MemTable) Clear() {
 	m.currentVersion++
 
 	m.logger.Info("MemTable cleared")
+}
+
+// GetKeysWithPrefix returns all keys that start with the given prefix
+func (m *MemTable) GetKeysWithPrefix(prefix []byte) [][]byte {
+	if prefix == nil {
+		return [][]byte{}
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Create a slice to hold the matching keys
+	keys := make([][]byte, 0)
+
+	// Start at the lowest level which contains all nodes
+	current := m.head.forward[0]
+	prefixLen := len(prefix)
+
+	// Traverse the skip list at level 0 (which contains all nodes)
+	for current != nil {
+		// Skip deleted nodes
+		if current.isDeleted {
+			current = current.forward[0]
+			continue
+		}
+
+		// Check if this key has the prefix
+		if current.key != nil && len(current.key) >= prefixLen {
+			hasPrefix := true
+			for i := 0; i < prefixLen; i++ {
+				if current.key[i] != prefix[i] {
+					hasPrefix = false
+					break
+				}
+			}
+
+			if hasPrefix {
+				// Add a copy of the key to avoid race conditions
+				keyCopy := make([]byte, len(current.key))
+				copy(keyCopy, current.key)
+				keys = append(keys, keyCopy)
+			}
+
+			// If the key is already greater than the prefix, we can stop
+			// (assuming keys are sorted)
+			if len(current.key) >= prefixLen && m.comparator(current.key[:prefixLen], prefix) > 0 {
+				break
+			}
+		}
+
+		current = current.forward[0]
+	}
+
+	return keys
 }
 
 // Ensure MemTable implements the MemTableInterface

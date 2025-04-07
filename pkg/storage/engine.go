@@ -258,15 +258,31 @@ func (e *StorageEngine) Close() error {
 
 	// Flush the current MemTable to disk if it's not empty
 	if e.memTable.EntryCount() > 0 {
-		if err := e.flushMemTableLocked(e.memTable); err != nil {
-			e.logger.Error("Failed to flush MemTable during close: %v", err)
+		entries := e.memTable.GetEntries()
+		if len(entries) > 0 {
+			if err := e.flushMemTableLocked(e.memTable); err != nil {
+				e.logger.Error("Failed to flush MemTable during close: %v", err)
+			}
+		} else {
+			e.logger.Info("Skipping MemTable flush during close - MemTable has 0 entries")
 		}
+	} else {
+		e.logger.Info("Skipping MemTable flush during close - MemTable is empty")
 	}
 
-	// Flush any immutable MemTables
-	for _, immMemTable := range e.immMemTables {
-		if err := e.flushMemTableLocked(immMemTable); err != nil {
-			e.logger.Error("Failed to flush immutable MemTable during close: %v", err)
+	// Flush any immutable MemTables - skip empty ones
+	for i, immMemTable := range e.immMemTables {
+		if immMemTable.EntryCount() > 0 {
+			entries := immMemTable.GetEntries()
+			if len(entries) > 0 {
+				if err := e.flushMemTableLocked(immMemTable); err != nil {
+					e.logger.Error("Failed to flush immutable MemTable %d during close: %v", i, err)
+				}
+			} else {
+				e.logger.Info("Skipping immutable MemTable %d flush during close - MemTable has 0 entries", i)
+			}
+		} else {
+			e.logger.Info("Skipping immutable MemTable %d flush during close - MemTable is empty", i)
 		}
 	}
 
@@ -711,6 +727,283 @@ func (e *StorageEngine) Sync() error {
 	return nil
 }
 
+// GetLogger returns the logger for the storage engine
+func (e *StorageEngine) GetLogger() model.Logger {
+	return e.logger
+}
+
+// SetUseLSMNodeLabelIndex sets whether to use LSM-tree based node label index
+func (e *StorageEngine) SetUseLSMNodeLabelIndex(use bool) {
+	e.useLSMNodeLabelIndex = use
+}
+
+// Scan returns a list of keys that start with the given prefix, up to the specified limit
+func (e *StorageEngine) Scan(prefix []byte, limit int) ([][]byte, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if !e.isOpen {
+		return nil, ErrEngineClosed
+	}
+
+	// Initialize result slice
+	result := make([][]byte, 0, limit)
+	prefixStr := string(prefix)
+	e.logger.Debug("Scanning for keys with prefix: %s (limit: %d)", prefixStr, limit)
+
+	// Get keys from the current MemTable
+	memKeys := e.memTable.GetKeysWithPrefix(prefix)
+	e.logger.Debug("Found %d keys with prefix in current MemTable", len(memKeys))
+
+	// Add keys from the current MemTable to the result, up to the limit
+	for _, key := range memKeys {
+		result = append(result, key)
+		if len(result) >= limit {
+			return result, nil
+		}
+	}
+
+	// Check immutable MemTables (newest to oldest)
+	for i := len(e.immMemTables) - 1; i >= 0; i-- {
+		immKeys := e.immMemTables[i].GetKeysWithPrefix(prefix)
+		e.logger.Debug("Found %d keys with prefix in immutable MemTable %d", len(immKeys), i)
+
+		// Add keys to the result, up to the limit
+		for _, key := range immKeys {
+			// Skip duplicates
+			isDuplicate := false
+			for _, existingKey := range result {
+				if string(existingKey) == string(key) {
+					isDuplicate = true
+					break
+				}
+			}
+
+			if !isDuplicate {
+				result = append(result, key)
+				if len(result) >= limit {
+					return result, nil
+				}
+			}
+		}
+	}
+
+	// Check SSTables (newest to oldest)
+	for i := len(e.sstables) - 1; i >= 0; i-- {
+		iter, err := e.sstables[i].Iterator()
+		if err != nil {
+			e.logger.Warn("Failed to create iterator for SSTable %d: %v", e.sstables[i].ID(), err)
+			continue
+		}
+
+		// Seek to the prefix
+		iter.Seek(prefix)
+
+		// Collect keys with the prefix
+		for iter.Valid() {
+			key := iter.Key()
+
+			// Check if the key starts with the prefix
+			if !hasPrefix(key, prefix) {
+				break // We've moved past keys with this prefix
+			}
+
+			// Skip duplicates
+			isDuplicate := false
+			for _, existingKey := range result {
+				if string(existingKey) == string(key) {
+					isDuplicate = true
+					break
+				}
+			}
+
+			if !isDuplicate {
+				result = append(result, key)
+				if len(result) >= limit {
+					iter.Close()
+					return result, nil
+				}
+			}
+
+			// Move to the next key
+			if err := iter.Next(); err != nil {
+				e.logger.Warn("Error advancing iterator in SSTable %d: %v", e.sstables[i].ID(), err)
+				break
+			}
+		}
+
+		iter.Close()
+	}
+
+	// Also check SSTables pending deletion
+	pendingKeys, err := e.scanPendingDeletionSSTables(prefix, limit-len(result))
+	if err != nil {
+		e.logger.Warn("Error scanning pending deletion SSTables: %v", err)
+	} else {
+		// Add pending keys, skipping duplicates
+		for _, pendingKey := range pendingKeys {
+			isDuplicate := false
+			for _, existingKey := range result {
+				if string(existingKey) == string(pendingKey) {
+					isDuplicate = true
+					break
+				}
+			}
+
+			if !isDuplicate {
+				result = append(result, pendingKey)
+				if len(result) >= limit {
+					break
+				}
+			}
+		}
+	}
+
+	e.logger.Debug("Scan completed, found %d keys with prefix %s", len(result), prefixStr)
+	return result, nil
+}
+
+// scanPendingDeletionSSTables scans SSTables pending deletion for keys with the given prefix
+func (e *StorageEngine) scanPendingDeletionSSTables(prefix []byte, limit int) ([][]byte, error) {
+	// Acquire deletion mutex to access pending deletion SSTables
+	e.deletionMu.Lock()
+
+	// Create a snapshot of the pending deletions to avoid long lock hold
+	pendingSSTables := make([]*SSTable, 0, len(e.pendingDeletions))
+	for _, sstable := range e.pendingDeletions {
+		pendingSSTables = append(pendingSSTables, sstable)
+	}
+	e.deletionMu.Unlock()
+
+	// Sort by ID in descending order to check newest first
+	sort.Slice(pendingSSTables, func(i, j int) bool {
+		return pendingSSTables[i].ID() > pendingSSTables[j].ID()
+	})
+
+	result := make([][]byte, 0, limit)
+
+	// Check each pending SSTable (newest to oldest)
+	for _, sstable := range pendingSSTables {
+		iter, err := sstable.Iterator()
+		if err != nil {
+			e.logger.Warn("Failed to create iterator for pending deletion SSTable %d: %v", sstable.ID(), err)
+			continue
+		}
+
+		// Seek to the prefix
+		iter.Seek(prefix)
+
+		// Collect keys with the prefix
+		for iter.Valid() {
+			key := iter.Key()
+
+			// Check if the key starts with the prefix
+			if !hasPrefix(key, prefix) {
+				break // We've moved past keys with this prefix
+			}
+
+			// Skip duplicates
+			isDuplicate := false
+			for _, existingKey := range result {
+				if string(existingKey) == string(key) {
+					isDuplicate = true
+					break
+				}
+			}
+
+			if !isDuplicate {
+				result = append(result, key)
+				if len(result) >= limit {
+					iter.Close()
+					return result, nil
+				}
+			}
+
+			// Move to the next key
+			if err := iter.Next(); err != nil {
+				e.logger.Warn("Error advancing iterator in pending deletion SSTable %d: %v", sstable.ID(), err)
+				break
+			}
+		}
+
+		iter.Close()
+	}
+
+	return result, nil
+}
+
+// hasPrefix checks if bytes slice has a prefix
+func hasPrefix(s, prefix []byte) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if s[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// GetMemTable returns the current MemTable - mainly for debugging
+func (e *StorageEngine) GetMemTable() MemTableInterface {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.memTable
+}
+
+// DumpDebugInfo prints all key-value pairs in the database for debugging
+func (e *StorageEngine) DumpDebugInfo() {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	fmt.Println("=== StorageEngine Debug Info ===")
+	fmt.Printf("Database directory: %s\n", e.config.DataDir)
+	fmt.Printf("Is open: %v\n", e.isOpen)
+	fmt.Printf("SSTable count: %d\n", len(e.sstables))
+	fmt.Printf("MemTable entry count: %d\n", e.memTable.EntryCount())
+
+	// Dump all entries in the current MemTable
+	fmt.Println("\n=== Current MemTable Entries ===")
+	entries := e.memTable.GetEntries()
+	for i := 0; i < len(entries); i += 2 {
+		if i+1 < len(entries) {
+			key := entries[i]
+			value := entries[i+1]
+			fmt.Printf("Key: %s, Value length: %d bytes\n", string(key), len(value))
+		}
+	}
+
+	// For each SSTable, scan and print all keys
+	for i, sstable := range e.sstables {
+		fmt.Printf("\n=== SSTable #%d (ID: %d) ===\n", i, sstable.ID())
+		iter, err := sstable.Iterator()
+		if err != nil {
+			fmt.Printf("Error creating iterator: %v\n", err)
+			continue
+		}
+
+		count := 0
+		for iter.Valid() {
+			key := iter.Key()
+			value := iter.Value()
+			fmt.Printf("Key: %s, Value length: %d bytes\n", string(key), len(value))
+
+			count++
+			if count >= 20 {
+				fmt.Println("Too many entries, truncating output...")
+				break
+			}
+
+			if err := iter.Next(); err != nil {
+				fmt.Printf("Error advancing iterator: %v\n", err)
+				break
+			}
+		}
+		iter.Close()
+	}
+}
+
 // Stats returns statistics about the storage engine
 func (e *StorageEngine) Stats() EngineStats {
 	e.mu.RLock()
@@ -759,8 +1052,16 @@ func (e *StorageEngine) Stats() EngineStats {
 // flushMemTableLocked flushes a MemTable to disk, creating a new SSTable
 // Caller must hold the lock
 func (e *StorageEngine) flushMemTableLocked(memTable MemTableInterface) error {
+	// Double-check to ensure we don't try to create an SSTable from an empty MemTable
 	if memTable.EntryCount() == 0 {
-		e.logger.Debug("Skipping flush of empty MemTable")
+		e.logger.Info("Skipping flush of empty MemTable")
+		return nil
+	}
+
+	// Get entries to verify we have something to write
+	entries := memTable.GetEntries()
+	if len(entries) == 0 {
+		e.logger.Info("MemTable returned 0 entries despite non-zero count - skipping flush")
 		return nil
 	}
 
