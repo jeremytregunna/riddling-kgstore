@@ -1,11 +1,11 @@
 package query
 
 import (
-	"testing"
+	"io/ioutil"
 	"os"
 	"path/filepath"
-	"io/ioutil"
-	
+	"testing"
+
 	"git.canoozie.net/riddling/kgstore/pkg/storage"
 )
 
@@ -17,7 +17,7 @@ func TestTransactionOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Create a storage engine with a unique data directory
 	dataDir := filepath.Join(tempDir, "db")
 	engineConfig := storage.DefaultEngineConfig()
@@ -27,10 +27,10 @@ func TestTransactionOperations(t *testing.T) {
 		t.Fatalf("Failed to create storage engine: %v", err)
 	}
 	defer engine.Close()
-	
+
 	// Create an executor
 	executor := NewExecutor(engine, nil, nil, nil, nil)
-	
+
 	// Test transaction operations
 	t.Run("Begin_Commit_Transaction", func(t *testing.T) {
 		// Begin a transaction
@@ -38,7 +38,7 @@ func TestTransactionOperations(t *testing.T) {
 			Type:       QueryTypeBeginTransaction,
 			Parameters: make(map[string]string),
 		}
-		
+
 		result, err := executor.Execute(beginQuery)
 		if err != nil {
 			t.Fatalf("Failed to begin transaction: %v", err)
@@ -52,9 +52,9 @@ func TestTransactionOperations(t *testing.T) {
 		if result.TxID == "" {
 			t.Errorf("Expected transaction ID to be non-empty")
 		}
-		
+
 		txID := result.TxID
-		
+
 		// Commit the transaction
 		commitQuery := &Query{
 			Type: QueryTypeCommitTransaction,
@@ -62,7 +62,7 @@ func TestTransactionOperations(t *testing.T) {
 				ParamTransactionID: txID,
 			},
 		}
-		
+
 		result, err = executor.Execute(commitQuery)
 		if err != nil {
 			t.Fatalf("Failed to commit transaction: %v", err)
@@ -77,14 +77,14 @@ func TestTransactionOperations(t *testing.T) {
 			t.Errorf("Expected transaction ID to be %s, got %s", txID, result.TxID)
 		}
 	})
-	
+
 	t.Run("Begin_Rollback_Transaction", func(t *testing.T) {
 		// Begin a transaction
 		beginQuery := &Query{
 			Type:       QueryTypeBeginTransaction,
 			Parameters: make(map[string]string),
 		}
-		
+
 		result, err := executor.Execute(beginQuery)
 		if err != nil {
 			t.Fatalf("Failed to begin transaction: %v", err)
@@ -98,9 +98,9 @@ func TestTransactionOperations(t *testing.T) {
 		if result.TxID == "" {
 			t.Errorf("Expected transaction ID to be non-empty")
 		}
-		
+
 		txID := result.TxID
-		
+
 		// Rollback the transaction
 		rollbackQuery := &Query{
 			Type: QueryTypeRollbackTransaction,
@@ -108,7 +108,7 @@ func TestTransactionOperations(t *testing.T) {
 				ParamTransactionID: txID,
 			},
 		}
-		
+
 		result, err = executor.Execute(rollbackQuery)
 		if err != nil {
 			t.Fatalf("Failed to rollback transaction: %v", err)
@@ -123,7 +123,7 @@ func TestTransactionOperations(t *testing.T) {
 			t.Errorf("Expected transaction ID to be %s, got %s", txID, result.TxID)
 		}
 	})
-	
+
 	t.Run("Transaction_Not_Found", func(t *testing.T) {
 		// Try to commit a non-existent transaction
 		commitQuery := &Query{
@@ -132,7 +132,7 @@ func TestTransactionOperations(t *testing.T) {
 				ParamTransactionID: "non-existent-tx",
 			},
 		}
-		
+
 		_, err := executor.Execute(commitQuery)
 		if err == nil {
 			t.Errorf("Expected error for non-existent transaction, got nil")
@@ -152,7 +152,7 @@ func TestDataManipulationOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Create a storage engine with a unique data directory
 	dataDir := filepath.Join(tempDir, "db")
 	engineConfig := storage.DefaultEngineConfig()
@@ -162,7 +162,7 @@ func TestDataManipulationOperations(t *testing.T) {
 		t.Fatalf("Failed to create storage engine: %v", err)
 	}
 	defer engine.Close()
-	
+
 	// Create an executor with GraphStore
 	graphStore, err := storage.NewGraphStore(engine, nil)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestDataManipulationOperations(t *testing.T) {
 		txRegistry:  NewTransactionRegistry(),
 		maxPathHops: 5,
 	}
-	
+
 	// Test data manipulation operations
 	t.Run("Create_Node", func(t *testing.T) {
 		// Create a node
@@ -185,7 +185,7 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result, err := executor.Execute(createNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
@@ -200,7 +200,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Errorf("Expected node ID to be non-empty")
 		}
 	})
-	
+
 	t.Run("Create_Edge", func(t *testing.T) {
 		// Create two nodes first
 		createNode1Query := &Query{
@@ -209,36 +209,36 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result1, err := executor.Execute(createNode1Query)
 		if err != nil {
 			t.Fatalf("Failed to create node 1: %v", err)
 		}
 		nodeID1 := result1.NodeID
-		
+
 		createNode2Query := &Query{
 			Type: QueryTypeCreateNode,
 			Parameters: map[string]string{
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result2, err := executor.Execute(createNode2Query)
 		if err != nil {
 			t.Fatalf("Failed to create node 2: %v", err)
 		}
 		nodeID2 := result2.NodeID
-		
+
 		// Create an edge between them
 		createEdgeQuery := &Query{
 			Type: QueryTypeCreateEdge,
 			Parameters: map[string]string{
 				ParamSource:   nodeID1,
-				ParamTargetID: nodeID2, 
+				ParamTargetID: nodeID2,
 				ParamLabel:    "KNOWS",
 			},
 		}
-		
+
 		result, err := executor.Execute(createEdgeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create edge: %v", err)
@@ -253,7 +253,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Errorf("Expected edge ID to be non-empty")
 		}
 	})
-	
+
 	t.Run("Set_Node_Property", func(t *testing.T) {
 		// Create a node first
 		createNodeQuery := &Query{
@@ -262,13 +262,13 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result, err := executor.Execute(createNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 		nodeID := result.NodeID
-		
+
 		// Set a property on the node
 		setPropertyQuery := &Query{
 			Type: QueryTypeSetProperty,
@@ -279,7 +279,7 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamValue:  "Alice",
 			},
 		}
-		
+
 		result, err = executor.Execute(setPropertyQuery)
 		if err != nil {
 			t.Fatalf("Failed to set property: %v", err)
@@ -294,7 +294,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Errorf("Expected node ID to be %s, got %s", nodeID, result.NodeID)
 		}
 	})
-	
+
 	t.Run("Remove_Node_Property", func(t *testing.T) {
 		// Create a node first
 		createNodeQuery := &Query{
@@ -303,13 +303,13 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result, err := executor.Execute(createNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 		nodeID := result.NodeID
-		
+
 		// Set a property on the node
 		setPropertyQuery := &Query{
 			Type: QueryTypeSetProperty,
@@ -320,12 +320,12 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamValue:  "Alice",
 			},
 		}
-		
+
 		_, err = executor.Execute(setPropertyQuery)
 		if err != nil {
 			t.Fatalf("Failed to set property: %v", err)
 		}
-		
+
 		// Remove the property
 		removePropertyQuery := &Query{
 			Type: QueryTypeRemoveProperty,
@@ -335,7 +335,7 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamName:   "name",
 			},
 		}
-		
+
 		result, err = executor.Execute(removePropertyQuery)
 		if err != nil {
 			t.Fatalf("Failed to remove property: %v", err)
@@ -350,7 +350,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Errorf("Expected node ID to be %s, got %s", nodeID, result.NodeID)
 		}
 	})
-	
+
 	t.Run("Delete_Node", func(t *testing.T) {
 		// Create a node first
 		createNodeQuery := &Query{
@@ -359,13 +359,13 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result, err := executor.Execute(createNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 		nodeID := result.NodeID
-		
+
 		// Delete the node
 		deleteNodeQuery := &Query{
 			Type: QueryTypeDeleteNode,
@@ -373,7 +373,7 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamID: nodeID,
 			},
 		}
-		
+
 		result, err = executor.Execute(deleteNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to delete node: %v", err)
@@ -388,7 +388,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Errorf("Expected node ID to be %s, got %s", nodeID, result.NodeID)
 		}
 	})
-	
+
 	t.Run("Delete_Edge", func(t *testing.T) {
 		// Create two nodes first
 		createNode1Query := &Query{
@@ -397,42 +397,42 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result1, err := executor.Execute(createNode1Query)
 		if err != nil {
 			t.Fatalf("Failed to create node 1: %v", err)
 		}
 		nodeID1 := result1.NodeID
-		
+
 		createNode2Query := &Query{
 			Type: QueryTypeCreateNode,
 			Parameters: map[string]string{
 				ParamLabel: "Person",
 			},
 		}
-		
+
 		result2, err := executor.Execute(createNode2Query)
 		if err != nil {
 			t.Fatalf("Failed to create node 2: %v", err)
 		}
 		nodeID2 := result2.NodeID
-		
+
 		// Create an edge between them
 		createEdgeQuery := &Query{
 			Type: QueryTypeCreateEdge,
 			Parameters: map[string]string{
 				ParamSource:   nodeID1,
-				ParamTargetID: nodeID2, 
+				ParamTargetID: nodeID2,
 				ParamLabel:    "KNOWS",
 			},
 		}
-		
+
 		result, err := executor.Execute(createEdgeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create edge: %v", err)
 		}
 		edgeID := result.EdgeID
-		
+
 		// Delete the edge
 		deleteEdgeQuery := &Query{
 			Type: QueryTypeDeleteEdge,
@@ -440,7 +440,7 @@ func TestDataManipulationOperations(t *testing.T) {
 				ParamID: edgeID,
 			},
 		}
-		
+
 		result, err = executor.Execute(deleteEdgeQuery)
 		if err != nil {
 			t.Fatalf("Failed to delete edge: %v", err)
@@ -465,7 +465,7 @@ func TestTransactionalOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Create a storage engine with a unique data directory
 	dataDir := filepath.Join(tempDir, "db")
 	engineConfig := storage.DefaultEngineConfig()
@@ -475,7 +475,7 @@ func TestTransactionalOperations(t *testing.T) {
 		t.Fatalf("Failed to create storage engine: %v", err)
 	}
 	defer engine.Close()
-	
+
 	// Create an executor with GraphStore
 	graphStore, err := storage.NewGraphStore(engine, nil)
 	if err != nil {
@@ -488,20 +488,20 @@ func TestTransactionalOperations(t *testing.T) {
 		txRegistry:  NewTransactionRegistry(),
 		maxPathHops: 5,
 	}
-	
+
 	t.Run("Create_Node_And_Set_Property_In_Transaction", func(t *testing.T) {
 		// Begin a transaction
 		beginQuery := &Query{
 			Type:       QueryTypeBeginTransaction,
 			Parameters: make(map[string]string),
 		}
-		
+
 		result, err := executor.Execute(beginQuery)
 		if err != nil {
 			t.Fatalf("Failed to begin transaction: %v", err)
 		}
 		txID := result.TxID
-		
+
 		// Create a node in the transaction
 		createNodeQuery := &Query{
 			Type: QueryTypeCreateNode,
@@ -510,13 +510,13 @@ func TestTransactionalOperations(t *testing.T) {
 				ParamTransactionID: txID,
 			},
 		}
-		
+
 		result, err = executor.Execute(createNodeQuery)
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 		nodeID := result.NodeID
-		
+
 		// Set a property on the node in the transaction
 		setPropertyQuery := &Query{
 			Type: QueryTypeSetProperty,
@@ -528,12 +528,12 @@ func TestTransactionalOperations(t *testing.T) {
 				ParamTransactionID: txID,
 			},
 		}
-		
+
 		_, err = executor.Execute(setPropertyQuery)
 		if err != nil {
 			t.Fatalf("Failed to set property: %v", err)
 		}
-		
+
 		// Commit the transaction
 		commitQuery := &Query{
 			Type: QueryTypeCommitTransaction,
@@ -541,7 +541,7 @@ func TestTransactionalOperations(t *testing.T) {
 				ParamTransactionID: txID,
 			},
 		}
-		
+
 		_, err = executor.Execute(commitQuery)
 		if err != nil {
 			t.Fatalf("Failed to commit transaction: %v", err)

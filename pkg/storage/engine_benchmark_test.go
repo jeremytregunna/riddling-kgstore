@@ -118,7 +118,7 @@ func BenchmarkEngineRead(b *testing.B) {
 func BenchmarkEngineCompaction(b *testing.B) {
 	// This benchmark focuses on testing the compaction mechanism
 	b.Skip("Skipping benchmark - we've verified the fix works")
-	
+
 	b.StopTimer()
 
 	// Create a temporary directory for test files
@@ -133,22 +133,22 @@ func BenchmarkEngineCompaction(b *testing.B) {
 	config.DataDir = tempDir
 	config.MemTableSize = 4 * 1024 // Force small memtables to ensure full SSTables
 	config.Logger = model.NewNoOpLogger()
-	config.BackgroundCompaction = false 
-	
+	config.BackgroundCompaction = false
+
 	// Create the engine
 	engine, err := NewStorageEngine(config)
 	if err != nil {
 		b.Fatalf("Failed to create storage engine: %v", err)
 	}
 	defer engine.Close()
-	
+
 	// Add a lot of test data to force MemTable to fill
 	const keyCount = 500
-	
+
 	for i := 0; i < keyCount; i++ {
 		key := []byte(fmt.Sprintf("large-key-%06d", i))
 		value := []byte(fmt.Sprintf("large-value-%06d-with-padding-to-make-it-larger", i))
-		
+
 		err := engine.Put(key, value)
 		if err != nil {
 			if err == ErrMemTableFull {
@@ -159,41 +159,41 @@ func BenchmarkEngineCompaction(b *testing.B) {
 			}
 		}
 	}
-	
+
 	// Add more keys to create more immutable MemTables
 	for i := 0; i < keyCount; i++ {
 		key := []byte(fmt.Sprintf("another-key-%06d", i))
 		value := []byte(fmt.Sprintf("another-value-%06d-with-different-padding", i))
-		
+
 		err := engine.Put(key, value)
 		if err != nil && err != ErrMemTableFull {
 			b.Fatalf("Failed to put more data: %v", err)
 		}
 	}
-	
+
 	// Flush any remaining data
 	err = engine.Flush()
 	if err != nil {
 		b.Fatalf("Failed to flush: %v", err)
 	}
-	
+
 	// Force additional flush to ensure SSTable creation
 	err = engine.Flush()
 	if err != nil {
 		b.Fatalf("Failed to flush again: %v", err)
 	}
-	
+
 	// Check if we have SSTables
 	stats := engine.Stats()
 	engine.logger.Debug("Created %d SSTables", stats.SSTables)
-	
+
 	if stats.SSTables == 0 {
 		b.Skip("Skipping test - no SSTables were created")
 	}
-	
+
 	// Start timing the compaction process
 	b.StartTimer()
-	
+
 	// Perform compaction with a timeout
 	done := make(chan struct{})
 	go func() {
@@ -203,7 +203,7 @@ func BenchmarkEngineCompaction(b *testing.B) {
 		}
 		close(done)
 	}()
-	
+
 	// Wait with a timeout
 	select {
 	case <-done:
@@ -212,14 +212,14 @@ func BenchmarkEngineCompaction(b *testing.B) {
 	case <-time.After(5 * time.Second):
 		b.Fatalf("Compaction timed out - likely hanging")
 	}
-	
+
 	b.StopTimer()
-	
+
 	// Simple verification that we still have some SSTables but fewer than before
 	statsAfter := engine.Stats()
-	engine.logger.Debug("After compaction: %d SSTables (was %d)", 
+	engine.logger.Debug("After compaction: %d SSTables (was %d)",
 		statsAfter.SSTables, stats.SSTables)
-	
+
 	// Check a few random keys
 	var sampleKey []byte
 	if keyCount > 0 {

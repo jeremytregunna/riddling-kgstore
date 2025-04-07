@@ -18,18 +18,18 @@ const (
 	QueryTypeFindEdgesByProperty QueryType = "FIND_EDGES_BY_PROPERTY"
 	QueryTypeFindNeighbors       QueryType = "FIND_NEIGHBORS"
 	QueryTypeFindPath            QueryType = "FIND_PATH"
-	
+
 	// Write operations
-	QueryTypeCreateNode        QueryType = "CREATE_NODE"
-	QueryTypeCreateEdge        QueryType = "CREATE_EDGE"
-	QueryTypeDeleteNode        QueryType = "DELETE_NODE"
-	QueryTypeDeleteEdge        QueryType = "DELETE_EDGE"
-	QueryTypeSetProperty       QueryType = "SET_PROPERTY"
-	QueryTypeRemoveProperty    QueryType = "REMOVE_PROPERTY"
-	
+	QueryTypeCreateNode     QueryType = "CREATE_NODE"
+	QueryTypeCreateEdge     QueryType = "CREATE_EDGE"
+	QueryTypeDeleteNode     QueryType = "DELETE_NODE"
+	QueryTypeDeleteEdge     QueryType = "DELETE_EDGE"
+	QueryTypeSetProperty    QueryType = "SET_PROPERTY"
+	QueryTypeRemoveProperty QueryType = "REMOVE_PROPERTY"
+
 	// Transaction operations
-	QueryTypeBeginTransaction  QueryType = "BEGIN_TRANSACTION"
-	QueryTypeCommitTransaction QueryType = "COMMIT_TRANSACTION"
+	QueryTypeBeginTransaction    QueryType = "BEGIN_TRANSACTION"
+	QueryTypeCommitTransaction   QueryType = "COMMIT_TRANSACTION"
 	QueryTypeRollbackTransaction QueryType = "ROLLBACK_TRANSACTION"
 )
 
@@ -50,16 +50,16 @@ const (
 	ParamTargetID      = "targetId"
 	ParamPropertyName  = "propertyName"
 	ParamPropertyValue = "propertyValue"
-	
+
 	// Write operation parameters
-	ParamTarget        = "target"      // "node" or "edge"
-	ParamSource        = "source"      // Source node ID for edge creation
-	ParamValue         = "value"       // Property value
-	ParamName          = "name"        // Property name
-	ParamID            = "id"          // Element ID
-	
+	ParamTarget = "target" // "node" or "edge"
+	ParamSource = "source" // Source node ID for edge creation
+	ParamValue  = "value"  // Property value
+	ParamName   = "name"   // Property name
+	ParamID     = "id"     // Element ID
+
 	// Transaction parameters
-	ParamTransactionID = "txId"        // Transaction ID
+	ParamTransactionID = "txId" // Transaction ID
 )
 
 // Direction types for traversal
@@ -195,7 +195,7 @@ func validateQueryParameters(query *Query) error {
 			return fmt.Errorf("%w: missing required parameter 'targetId'", ErrInvalidQuery)
 		}
 		// MaxHops is optional, defaults to a reasonable value in the executor
-	
+
 	// Write operations
 	case QueryTypeCreateNode:
 		if _, ok := query.Parameters[ParamLabel]; !ok {
@@ -244,7 +244,7 @@ func validateQueryParameters(query *Query) error {
 		if _, ok := query.Parameters[ParamName]; !ok {
 			return fmt.Errorf("%w: missing required parameter 'name'", ErrInvalidQuery)
 		}
-	
+
 	// Transaction operations
 	case QueryTypeBeginTransaction:
 		// No required parameters

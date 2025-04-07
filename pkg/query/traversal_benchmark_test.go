@@ -28,22 +28,22 @@ func BenchmarkTraversal_BFS(b *testing.B) {
 		startNodeID := startNodeIDs[i%len(startNodeIDs)]
 		direction := directions[i%len(directions)]
 		maxDepth := maxDepths[i%len(maxDepths)]
-		
+
 		// Set max depth for this iteration
 		traversal.SetMaxDepth(maxDepth)
-		
+
 		// Count nodes to verify traversal works
 		nodeCount := 0
 		visitor := func(node model.Node, depth int) (bool, error) {
 			nodeCount++
 			return true, nil // Continue traversal
 		}
-		
+
 		err := traversal.Run(startNodeID, direction, visitor)
 		if err != nil {
 			b.Fatalf("Error during traversal: %v", err)
 		}
-		
+
 		// Make sure the traversal actually found nodes
 		if nodeCount == 0 {
 			b.Logf("Warning: No nodes visited during traversal from node %d", startNodeID)
@@ -73,22 +73,22 @@ func BenchmarkTraversal_DFS(b *testing.B) {
 		startNodeID := startNodeIDs[i%len(startNodeIDs)]
 		direction := directions[i%len(directions)]
 		maxDepth := maxDepths[i%len(maxDepths)]
-		
+
 		// Set max depth for this iteration
 		traversal.SetMaxDepth(maxDepth)
-		
+
 		// Count nodes to verify traversal works
 		nodeCount := 0
 		visitor := func(node model.Node, depth int) (bool, error) {
 			nodeCount++
 			return true, nil // Continue traversal
 		}
-		
+
 		err := traversal.Run(startNodeID, direction, visitor)
 		if err != nil {
 			b.Fatalf("Error during traversal: %v", err)
 		}
-		
+
 		// Make sure the traversal actually found nodes
 		if nodeCount == 0 {
 			b.Logf("Warning: No nodes visited during traversal from node %d", startNodeID)
@@ -120,7 +120,7 @@ func BenchmarkTraversal_PathFinding(b *testing.B) {
 		{80, 85},
 		{90, 95},
 	}
-	
+
 	maxHops := []int{2, 3, 4}
 
 	b.ResetTimer()
@@ -130,7 +130,7 @@ func BenchmarkTraversal_PathFinding(b *testing.B) {
 		// Select test parameters
 		pair := pathPairs[i%len(pathPairs)]
 		hops := maxHops[i%len(maxHops)]
-		
+
 		// Use the internal findPathBFS function directly
 		_, err := executor.findPathBFS(pair.source, pair.target, hops)
 		if err != nil {
@@ -160,13 +160,13 @@ func BenchmarkTraversal_EarlyTermination(b *testing.B) {
 		// Select test parameters
 		startNodeID := startNodeIDs[i%len(startNodeIDs)]
 		targetLabel := targets[i%len(targets)]
-		
+
 		// Set visitor that terminates when finding a node with specific label
 		visitor := func(node model.Node, depth int) (bool, error) {
 			// Stop traversal if we find a node with the target label
 			return node.Label != targetLabel, nil
 		}
-		
+
 		// Run BFS traversal with early termination
 		traversal.SetType(TraversalTypeBFS)
 		err := traversal.Run(startNodeID, DirectionBoth, visitor)

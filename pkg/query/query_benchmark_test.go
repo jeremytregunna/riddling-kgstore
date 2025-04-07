@@ -90,24 +90,24 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 			node := model.NewNode(nodeID, label)
 			node.AddProperty("name", fmt.Sprintf("%s-%d", label, i))
 			node.AddProperty("id", fmt.Sprintf("%d", nodeID))
-			
+
 			// Serialize and store the node
 			nodeBytes, err := model.Serialize(node)
 			if err != nil {
 				b.Fatalf("Failed to serialize node: %v", err)
 			}
-			
+
 			err = nodeIndex.Put([]byte(fmt.Sprintf("node:%d", nodeID)), nodeBytes)
 			if err != nil {
 				b.Fatalf("Failed to add node to index: %v", err)
 			}
-			
+
 			// Add node label to index
 			err = nodeLabels.Put([]byte(label), []byte(fmt.Sprintf("%d", nodeID)))
 			if err != nil {
 				b.Fatalf("Failed to add node to label index: %v", err)
 			}
-			
+
 			// Add node properties to index
 			for propName, propValue := range node.GetProperties() {
 				propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
@@ -117,22 +117,22 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 					b.Fatalf("Failed to add node property to index: %v", err)
 				}
 			}
-			
+
 			nodeID++
 		}
 	}
 
 	// Create edges between nodes with different relationships
 	edgeLabelVals := []string{"KNOWS", "WORKS_AT", "OWNS", "LOCATED_IN", "PARTICIPATES_IN"}
-	
+
 	// Create a moderate connection density between nodes
 	edgesPerNode := 5
 	rand.Seed(time.Now().UnixNano())
-	
+
 	// Track outgoing and incoming edges by node
 	outgoingEdges := make(map[uint64][]string)
 	incomingEdges := make(map[uint64][]string)
-	
+
 	// Create edges for nodes
 	totalNodes := uint64(len(labels) * nodesPerLabel)
 	for sourceID := uint64(1); sourceID <= totalNodes; sourceID++ {
@@ -142,48 +142,48 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 			for targetID == sourceID {
 				targetID = uint64(rand.Intn(int(totalNodes)) + 1)
 			}
-			
+
 			// Select a random edge label
 			edgeLabel := edgeLabelVals[rand.Intn(len(edgeLabelVals))]
-			
+
 			// Create edge
 			edge := model.NewEdge(sourceID, targetID, edgeLabel)
 			edge.AddProperty("weight", fmt.Sprintf("%d", rand.Intn(10)+1))
 			if rand.Intn(2) == 0 {
 				edge.AddProperty("timestamp", fmt.Sprintf("%d", time.Now().Unix()-int64(rand.Intn(86400*365))))
 			}
-			
+
 			// Create edge ID
 			edgeID := fmt.Sprintf("%d-%d", sourceID, targetID)
-			
+
 			// Track outgoing/incoming edges
 			if outgoingEdges[sourceID] == nil {
 				outgoingEdges[sourceID] = []string{}
 			}
 			outgoingEdges[sourceID] = append(outgoingEdges[sourceID], edgeID)
-			
+
 			if incomingEdges[targetID] == nil {
 				incomingEdges[targetID] = []string{}
 			}
 			incomingEdges[targetID] = append(incomingEdges[targetID], edgeID)
-			
+
 			// Serialize and store the edge
 			edgeBytes, err := model.Serialize(edge)
 			if err != nil {
 				b.Fatalf("Failed to serialize edge: %v", err)
 			}
-			
+
 			err = edgeIndex.Put([]byte(fmt.Sprintf("edge:%s", edgeID)), edgeBytes)
 			if err != nil {
 				b.Fatalf("Failed to add edge to index: %v", err)
 			}
-			
+
 			// Add edge label to index
 			err = edgeLabels.Put([]byte(edgeLabel), []byte(edgeID))
 			if err != nil {
 				b.Fatalf("Failed to add edge to label index: %v", err)
 			}
-			
+
 			// Add edge properties to index
 			for propName, propValue := range edge.GetProperties() {
 				propKey := []byte(fmt.Sprintf("%s|%s", propName, propValue))
@@ -194,7 +194,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 			}
 		}
 	}
-	
+
 	// Add outgoing edges to index
 	for nodeID, edgeIDs := range outgoingEdges {
 		// Properly serialize the edge IDs using the model.Serialize function
@@ -202,14 +202,14 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 		if err != nil {
 			b.Fatalf("Failed to serialize outgoing edge IDs: %v", err)
 		}
-		
+
 		outKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
 		err = edgeIndex.Put(outKey, edgeIDsBytes)
 		if err != nil {
 			b.Fatalf("Failed to add outgoing edges index: %v", err)
 		}
 	}
-	
+
 	// Add incoming edges to index
 	for nodeID, edgeIDs := range incomingEdges {
 		// Properly serialize the edge IDs using the model.Serialize function
@@ -217,7 +217,7 @@ func addBenchmarkData(b *testing.B, nodeIndex, edgeIndex, nodeLabels, edgeLabels
 		if err != nil {
 			b.Fatalf("Failed to serialize incoming edge IDs: %v", err)
 		}
-		
+
 		inKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
 		err = edgeIndex.Put(inKey, edgeIDsBytes)
 		if err != nil {
@@ -253,7 +253,7 @@ func BenchmarkQueryExecution_FindNodesByLabel(b *testing.B) {
 				ParamLabel: label,
 			},
 		}
-		
+
 		_, err := executor.Execute(query)
 		if err != nil {
 			b.Fatalf("Error executing query: %v", err)
@@ -283,7 +283,7 @@ func BenchmarkQueryExecution_FindEdgesByLabel(b *testing.B) {
 				ParamLabel: label,
 			},
 		}
-		
+
 		_, err := executor.Execute(query)
 		if err != nil {
 			b.Fatalf("Error executing query: %v", err)
@@ -312,7 +312,7 @@ func BenchmarkQueryExecution_FindNeighbors(b *testing.B) {
 		// Vary the node ID and direction
 		nodeID := nodeIDs[i%len(nodeIDs)]
 		direction := directions[i%len(directions)]
-		
+
 		query := &Query{
 			Type: QueryTypeFindNeighbors,
 			Parameters: map[string]string{
@@ -320,7 +320,7 @@ func BenchmarkQueryExecution_FindNeighbors(b *testing.B) {
 				ParamDirection: direction,
 			},
 		}
-		
+
 		_, err := executor.Execute(query)
 		if err != nil {
 			b.Fatalf("Error executing query: %v", err)
@@ -361,7 +361,7 @@ func BenchmarkQueryExecution_FindPath(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Vary the source/target pair
 		pair := pathPairs[i%len(pathPairs)]
-		
+
 		query := &Query{
 			Type: QueryTypeFindPath,
 			Parameters: map[string]string{
@@ -370,7 +370,7 @@ func BenchmarkQueryExecution_FindPath(b *testing.B) {
 				ParamMaxHops:  "3", // Use max hops of 3 for reasonable performance
 			},
 		}
-		
+
 		_, err := executor.Execute(query)
 		if err != nil {
 			// Skip errors as some paths might not exist
@@ -412,7 +412,7 @@ func BenchmarkQueryExecution_FindNodesByProperty(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Vary the property being searched
 		search := propertySearches[i%len(propertySearches)]
-		
+
 		query := &Query{
 			Type: QueryTypeFindNodesByProperty,
 			Parameters: map[string]string{
@@ -420,7 +420,7 @@ func BenchmarkQueryExecution_FindNodesByProperty(b *testing.B) {
 				ParamPropertyValue: search.value,
 			},
 		}
-		
+
 		_, err := executor.Execute(query)
 		if err != nil {
 			b.Fatalf("Error executing query: %v", err)

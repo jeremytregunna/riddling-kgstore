@@ -40,7 +40,7 @@ func setupPropertyIndexBenchmark(b *testing.B, fullTextSearch bool) (*StorageEng
 	} else {
 		propIndex, err = NewNodePropertyIndex(engine, model.NewNoOpLogger())
 	}
-	
+
 	if err != nil {
 		engine.Close()
 		os.RemoveAll(tempDir)
@@ -97,16 +97,16 @@ func BenchmarkFullTextIndexing(b *testing.B) {
 				// Index properties for each entity
 				for j := 0; j < tt.entityCount; j++ {
 					entityID := entityIDs[j]
-					
+
 					// Add each property for this entity
 					for k, propName := range properties {
 						// Create unique but deterministic values
 						propValue := fmt.Sprintf("%s value for entity %d with words like searchable indexed content item %d",
 							propName, j, k)
-						
+
 						// Create the key in the format "propertyName|entityID"
 						key := []byte(fmt.Sprintf("%s|%s", propName, entityID))
-						
+
 						if err := propIndex.Put(key, []byte(propValue)); err != nil {
 							b.Fatalf("Failed to index property: %v", err)
 						}
@@ -138,25 +138,25 @@ func BenchmarkFullTextSearch(b *testing.B) {
 			// Prepare data - index a set of entities with properties
 			for i := 0; i < tt.dataSize; i++ {
 				entityID := []byte(fmt.Sprintf("node-%06d", i))
-				
+
 				// Add standard properties
 				nameKey := []byte(fmt.Sprintf("name|%s", entityID))
 				descKey := []byte(fmt.Sprintf("description|%s", entityID))
-				
+
 				// Create property values with some searchable terms
 				nameVal := fmt.Sprintf("Entity %d", i)
-				descVal := fmt.Sprintf("This is entity %d with searchable terms like example text content %d", 
+				descVal := fmt.Sprintf("This is entity %d with searchable terms like example text content %d",
 					i, i%10)
-				
+
 				if err := propIndex.Put(nameKey, []byte(nameVal)); err != nil {
 					b.Fatalf("Failed to index name property: %v", err)
 				}
-				
+
 				if err := propIndex.Put(descKey, []byte(descVal)); err != nil {
 					b.Fatalf("Failed to index description property: %v", err)
 				}
 			}
-			
+
 			// Different search terms to benchmark
 			searchTerms := []struct {
 				property string
@@ -171,16 +171,16 @@ func BenchmarkFullTextSearch(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				// Rotate through different search terms
 				term := searchTerms[i%len(searchTerms)]
-				
+
 				// Create the search key in the format "propertyName|propertyValue"
 				searchKey := []byte(fmt.Sprintf("%s|%s", term.property, term.value))
-				
+
 				// Perform the search
 				results, err := propIndex.GetAll(searchKey)
 				if err != nil {
 					b.Fatalf("Failed to search: %v", err)
 				}
-				
+
 				// Ensure we got some results
 				if len(results) == 0 && !tt.fullTextEnabled {
 					// If not using full-text search, we should still find exact matches
@@ -200,23 +200,23 @@ func BenchmarkPropertyIndexRange(b *testing.B) {
 
 	// Prepare data - create numerical properties for range queries
 	const entityCount = 1000
-	
+
 	// Index entities with numerical age property
 	for i := 0; i < entityCount; i++ {
 		entityID := []byte(fmt.Sprintf("node-%06d", i))
-		
+
 		// Add an age property with incrementing values
 		ageKey := []byte(fmt.Sprintf("age|%s", entityID))
 		ageVal := fmt.Sprintf("%d", i%100) // Ages from 0-99
-		
+
 		// Add a price property with incrementing values
 		priceKey := []byte(fmt.Sprintf("price|%s", entityID))
 		priceVal := fmt.Sprintf("%d.99", (i%50)*10) // Prices like 0.99, 10.99, etc.
-		
+
 		if err := propIndex.Put(ageKey, []byte(ageVal)); err != nil {
 			b.Fatalf("Failed to index age property: %v", err)
 		}
-		
+
 		if err := propIndex.Put(priceKey, []byte(priceVal)); err != nil {
 			b.Fatalf("Failed to index price property: %v", err)
 		}
@@ -228,8 +228,8 @@ func BenchmarkPropertyIndexRange(b *testing.B) {
 		min      string
 		max      string
 	}{
-		{"age", "20", "30"},    // Age between 20-30
-		{"age", "50", "99"},    // Age between 50-99
+		{"age", "20", "30"},     // Age between 20-30
+		{"age", "50", "99"},     // Age between 50-99
 		{"price", "100", "300"}, // Price between 100-300
 	}
 
@@ -237,20 +237,20 @@ func BenchmarkPropertyIndexRange(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Rotate through different range queries
 		query := rangeQueries[i%len(rangeQueries)]
-		
+
 		// For a real range query, we'd need to implement it in the property index
 		// But for benchmarking, we'll simulate by getting all values and filtering
-		
+
 		// First get all entities with the property
 		allResults, err := propIndex.GetAll([]byte(query.property + "|"))
 		if err != nil {
 			b.Fatalf("Failed to retrieve entities: %v", err)
 		}
-		
+
 		// Filter results (simulating range query)
 		minVal := query.min
 		maxVal := query.max
-		
+
 		// Count the results in range (we need to do this work to ensure
 		// the compiler doesn't optimize out our benchmark loop)
 		matchCount := 0

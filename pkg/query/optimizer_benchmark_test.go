@@ -67,7 +67,7 @@ func BenchmarkOptimizer_Optimize(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Optimize each query in our test set
 		query := queries[i%len(queries)]
-		
+
 		_, err := optimizer.Optimize(query)
 		if err != nil {
 			b.Fatalf("Error optimizing query: %v", err)
@@ -95,7 +95,7 @@ func BenchmarkQueryParsing_Parse(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Parse each query string in our test set
 		queryStr := queryStrings[i%len(queryStrings)]
-		
+
 		_, err := Parse(queryStr)
 		if err != nil {
 			b.Fatalf("Error parsing query: %v", err)
@@ -122,7 +122,7 @@ func BenchmarkQueryParsing_ParseJSON(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Parse each JSON query in our test set
 		jsonQuery := jsonQueries[i%len(jsonQueries)]
-		
+
 		// Use the standard Parse function which handles JSON input
 		_, err := Parse(jsonQuery)
 		if err != nil {
@@ -186,7 +186,7 @@ func BenchmarkOptimizer_OptimizePathQuery(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Optimize each path query
 		query := queries[i%len(queries)]
-		
+
 		_, err := optimizer.Optimize(query)
 		if err != nil {
 			b.Fatalf("Error optimizing query: %v", err)

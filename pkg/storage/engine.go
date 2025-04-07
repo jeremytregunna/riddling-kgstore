@@ -642,7 +642,7 @@ func (e *StorageEngine) Compact() error {
 	// First, flush all immutable MemTables
 	e.logger.Debug("Flushing %d immutable MemTables", len(e.immMemTables))
 	for i, immMemTable := range e.immMemTables {
-		e.logger.Debug("Flushing immutable MemTable %d/%d with %d entries", 
+		e.logger.Debug("Flushing immutable MemTable %d/%d with %d entries",
 			i+1, len(e.immMemTables), immMemTable.EntryCount())
 		if err := e.flushMemTableLocked(immMemTable); err != nil {
 			e.logger.Debug("Failed to flush immutable MemTable: %v", err)
@@ -1064,7 +1064,7 @@ func min(a, b int) int {
 // allocateSSTableLevels allocates existing SSTables into levels
 func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 	e.logger.Debug("Allocating %d SSTables into levels", len(e.sstables))
-	
+
 	// Clear current levels
 	for i := 0; i < lc.MaxLevels; i++ {
 		lc.Levels[i] = make([]*SSTable, 0)
@@ -1098,7 +1098,7 @@ func (e *StorageEngine) allocateSSTableLevels(lc *LeveledCompaction) {
 		lc.Levels[1] = append(lc.Levels[1], e.sstables[:startIdx]...)
 		e.logger.Debug("Allocated %d older SSTables to level 1", startIdx)
 	}
-	
+
 	if e.logger.IsLevelEnabled(model.LogLevelDebug) {
 		e.logger.Debug("Final level allocation:")
 		for i := 0; i < lc.MaxLevels; i++ {
@@ -1174,7 +1174,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
-			
+
 			// Log progress occasionally
 			if keyCount%1000 == 0 && e.logger.IsLevelEnabled(model.LogLevelDebug) {
 				e.logger.Debug("Processed %d keys from SSTable %d", keyCount, sstable.ID())
@@ -1225,7 +1225,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 				e.logger.Error("Failed to advance iterator: %v", err)
 				break
 			}
-			
+
 			// Log progress occasionally
 			if keyCount%1000 == 0 && e.logger.IsLevelEnabled(model.LogLevelDebug) {
 				e.logger.Debug("Processed %d keys from level 1 SSTable %d", keyCount, sstable.ID())
@@ -1268,7 +1268,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	})
 
 	// Add 'remove' operations for all SSTables that will be removed
-	e.logger.Debug("Adding 'remove' operations for %d SSTables to transaction", 
+	e.logger.Debug("Adding 'remove' operations for %d SSTables to transaction",
 		len(lc.Levels[0])+len(lc.Levels[1]))
 	allSSTablesToRemove := append(lc.Levels[0], lc.Levels[1]...)
 	oldIDs := make([]uint64, 0, len(allSSTablesToRemove))
@@ -1321,7 +1321,7 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 		e.markSSTableForDeletion(sstable)
 	}
 
-	e.logger.Debug("Level 0 compaction complete, created SSTable %d with %d keys", 
+	e.logger.Debug("Level 0 compaction complete, created SSTable %d with %d keys",
 		mergedSSTable.ID(), mergedSSTable.KeyCount())
 	e.logger.Info("Compacted %d SSTables (IDs: %v) into new SSTable %d with %d keys",
 		len(oldIDs), oldIDs, mergedSSTable.ID(), mergedSSTable.KeyCount())
@@ -1627,19 +1627,19 @@ func (e *StorageEngine) CleanupPendingDeletions() {
 func (e *StorageEngine) markSSTableForDeletion(sstable *SSTable) {
 	id := sstable.ID()
 	e.logger.Debug("Marking SSTable %d for deletion", id)
-	
+
 	// Set a timeout to make sure we don't hang on mutex acquisition
 	acquired := make(chan bool, 1)
 	go func() {
 		e.deletionMu.Lock()
 		acquired <- true
 	}()
-	
+
 	select {
 	case <-acquired:
 		// Continue with normal operation now that we have the lock
 		defer e.deletionMu.Unlock()
-		
+
 		// Add to pending deletions if not already there
 		if _, exists := e.pendingDeletions[id]; !exists {
 			e.pendingDeletions[id] = sstable

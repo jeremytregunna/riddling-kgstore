@@ -132,12 +132,12 @@ func BenchmarkEdgeIndexIterate(b *testing.B) {
 
 	// Find all the sstables
 	tempDir := engine.config.DataDir
-	
+
 	// Force a flush to ensure data is in sstables
 	if err := engine.Flush(); err != nil {
 		b.Fatalf("Failed to flush storage engine: %v", err)
 	}
-	
+
 	// Now find the sstables after flush
 	sstablePaths, err := filepath.Glob(filepath.Join(tempDir, "sstables", "*.data"))
 	if err != nil {

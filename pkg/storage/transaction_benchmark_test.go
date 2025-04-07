@@ -223,7 +223,7 @@ func BenchmarkMixedTransactionWorkload(b *testing.B) {
 
 			// Start a transaction
 			tx := tm.Begin()
-			
+
 			// Add a mix of operations based on counter value
 			if myCounter%3 == 0 {
 				// Add an add operation
@@ -239,7 +239,7 @@ func BenchmarkMixedTransactionWorkload(b *testing.B) {
 				op := TransactionOperation{
 					Type:   "remove",
 					Target: "sstable",
-					ID:     myCounter % 100 + 1, // Use existing SSTable ID
+					ID:     myCounter%100 + 1, // Use existing SSTable ID
 					Data:   nil,
 				}
 				tx.AddOperation(op)
@@ -248,8 +248,8 @@ func BenchmarkMixedTransactionWorkload(b *testing.B) {
 				op := TransactionOperation{
 					Type:   "rename",
 					Target: "sstable",
-					ID:     myCounter % 100 + 1, // Source ID
-					Data:   []uint64{myCounter % 100 + 1, myCounter}, // Source and target IDs
+					ID:     myCounter%100 + 1,                      // Source ID
+					Data:   []uint64{myCounter%100 + 1, myCounter}, // Source and target IDs
 				}
 				tx.AddOperation(op)
 			}

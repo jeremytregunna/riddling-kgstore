@@ -11,17 +11,17 @@ import (
 
 // Result represents a query result
 type Result struct {
-	Nodes     []model.Node `json:"nodes,omitempty"`
-	Edges     []model.Edge `json:"edges,omitempty"`
-	Paths     []Path       `json:"paths,omitempty"`
-	Error     string       `json:"error,omitempty"`
-	
+	Nodes []model.Node `json:"nodes,omitempty"`
+	Edges []model.Edge `json:"edges,omitempty"`
+	Paths []Path       `json:"paths,omitempty"`
+	Error string       `json:"error,omitempty"`
+
 	// Fields for data modification operations
-	NodeID    string    `json:"nodeId,omitempty"`    // Created node ID
-	EdgeID    string    `json:"edgeId,omitempty"`    // Created edge ID
-	Success   bool      `json:"success,omitempty"`   // Operation success flag
-	TxID      string    `json:"txId,omitempty"`      // Transaction ID
-	Operation string    `json:"operation,omitempty"` // Operation performed
+	NodeID    string `json:"nodeId,omitempty"`    // Created node ID
+	EdgeID    string `json:"edgeId,omitempty"`    // Created edge ID
+	Success   bool   `json:"success,omitempty"`   // Operation success flag
+	TxID      string `json:"txId,omitempty"`      // Transaction ID
+	Operation string `json:"operation,omitempty"` // Operation performed
 }
 
 // Path represents a path in the graph
@@ -32,17 +32,17 @@ type Path struct {
 
 // Executor executes queries against the storage engine
 type Executor struct {
-	Engine           *storage.StorageEngine
-	NodeIndex        storage.Index
-	EdgeIndex        storage.Index
-	NodeLabels       storage.Index
-	EdgeLabels       storage.Index
-	NodeProperties   storage.Index
-	EdgeProperties   storage.Index
-	GraphStore       *storage.GraphStore  // Graph operations store
-	Optimizer        *Optimizer
-	maxPathHops      int
-	txRegistry       *TransactionRegistry // Registry of active transactions
+	Engine         *storage.StorageEngine
+	NodeIndex      storage.Index
+	EdgeIndex      storage.Index
+	NodeLabels     storage.Index
+	EdgeLabels     storage.Index
+	NodeProperties storage.Index
+	EdgeProperties storage.Index
+	GraphStore     *storage.GraphStore // Graph operations store
+	Optimizer      *Optimizer
+	maxPathHops    int
+	txRegistry     *TransactionRegistry // Registry of active transactions
 }
 
 // TransactionRegistry manages active transactions
@@ -72,7 +72,7 @@ func NewExecutor(engine *storage.StorageEngine, nodeIndex, edgeIndex, nodeLabels
 		fmt.Printf("Error creating graph store: %v\n", err)
 		graphStore = nil
 	}
-	
+
 	return &Executor{
 		Engine:      engine,
 		NodeIndex:   nodeIndex,
@@ -103,7 +103,7 @@ func NewExecutorWithAllIndexes(
 		fmt.Printf("Error creating graph store: %v\n", err)
 		graphStore = nil
 	}
-	
+
 	return &Executor{
 		Engine:         engine,
 		NodeIndex:      nodeIndex,
@@ -126,20 +126,20 @@ func (e *Executor) BeginTransaction() (string, error) {
 	if e.GraphStore == nil {
 		return "", fmt.Errorf("graph store not available")
 	}
-	
+
 	e.txRegistry.mu.Lock()
 	defer e.txRegistry.mu.Unlock()
-	
+
 	// Generate a transaction ID
 	txID := fmt.Sprintf("tx-%d", e.txRegistry.nextID)
 	e.txRegistry.nextID++
-	
+
 	// Begin a transaction in the storage engine
 	tx := e.Engine.GetTransactionManager().Begin()
-	
+
 	// Store the transaction
 	e.txRegistry.transactions[txID] = tx
-	
+
 	return txID, nil
 }
 
@@ -147,22 +147,22 @@ func (e *Executor) BeginTransaction() (string, error) {
 func (e *Executor) CommitTransaction(txID string) error {
 	e.txRegistry.mu.Lock()
 	defer e.txRegistry.mu.Unlock()
-	
+
 	// Get the transaction
 	tx, ok := e.txRegistry.transactions[txID]
 	if !ok {
 		return fmt.Errorf("transaction not found: %s", txID)
 	}
-	
+
 	// Commit the transaction
 	err := tx.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	// Remove the transaction from the registry
 	delete(e.txRegistry.transactions, txID)
-	
+
 	return nil
 }
 
@@ -170,22 +170,22 @@ func (e *Executor) CommitTransaction(txID string) error {
 func (e *Executor) RollbackTransaction(txID string) error {
 	e.txRegistry.mu.Lock()
 	defer e.txRegistry.mu.Unlock()
-	
+
 	// Get the transaction
 	tx, ok := e.txRegistry.transactions[txID]
 	if !ok {
 		return fmt.Errorf("transaction not found: %s", txID)
 	}
-	
+
 	// Rollback the transaction
 	err := tx.Rollback()
 	if err != nil {
 		return fmt.Errorf("failed to rollback transaction: %w", err)
 	}
-	
+
 	// Remove the transaction from the registry
 	delete(e.txRegistry.transactions, txID)
-	
+
 	return nil
 }
 
@@ -193,13 +193,13 @@ func (e *Executor) RollbackTransaction(txID string) error {
 func (e *Executor) GetTransaction(txID string) (*storage.Transaction, error) {
 	e.txRegistry.mu.RLock()
 	defer e.txRegistry.mu.RUnlock()
-	
+
 	// Get the transaction
 	tx, ok := e.txRegistry.transactions[txID]
 	if !ok {
 		return nil, fmt.Errorf("transaction not found: %s", txID)
 	}
-	
+
 	return tx, nil
 }
 
@@ -212,7 +212,7 @@ func (e *Executor) GetActiveTransaction(txID string) (*storage.Transaction, bool
 		tx, err := e.GetTransaction(txID)
 		return tx, false, err // Not auto-transaction
 	}
-	
+
 	// Otherwise, create an auto-transaction
 	// In a real implementation, we'd use goroutine ID to track auto-transactions
 	// For simplicity, we'll just create a new transaction each time
@@ -250,7 +250,7 @@ func (e *Executor) Execute(query *Query) (*Result, error) {
 		return e.executeNeighbors(plan)
 	case QueryTypeFindPath:
 		return e.executePath(plan)
-		
+
 	// Transaction operations
 	case QueryTypeBeginTransaction:
 		return e.executeBeginTransaction(plan)
@@ -258,7 +258,7 @@ func (e *Executor) Execute(query *Query) (*Result, error) {
 		return e.executeCommitTransaction(plan)
 	case QueryTypeRollbackTransaction:
 		return e.executeRollbackTransaction(plan)
-		
+
 	// Write operations
 	case QueryTypeCreateNode:
 		return e.executeCreateNode(plan)
@@ -272,7 +272,7 @@ func (e *Executor) Execute(query *Query) (*Result, error) {
 		return e.executeSetProperty(plan)
 	case QueryTypeRemoveProperty:
 		return e.executeRemoveProperty(plan)
-		
+
 	default:
 		return nil, fmt.Errorf("unsupported query type: %s", plan.Type)
 	}
@@ -284,7 +284,7 @@ func (e *Executor) executeBeginTransaction(query *Query) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &Result{
 		TxID:      txID,
 		Success:   true,
@@ -299,11 +299,11 @@ func (e *Executor) executeCommitTransaction(query *Query) (*Result, error) {
 	if !ok {
 		return nil, fmt.Errorf("missing transaction ID")
 	}
-	
+
 	if err := e.CommitTransaction(txID); err != nil {
 		return nil, err
 	}
-	
+
 	return &Result{
 		TxID:      txID,
 		Success:   true,
@@ -318,11 +318,11 @@ func (e *Executor) executeRollbackTransaction(query *Query) (*Result, error) {
 	if !ok {
 		return nil, fmt.Errorf("missing transaction ID")
 	}
-	
+
 	if err := e.RollbackTransaction(txID); err != nil {
 		return nil, err
 	}
-	
+
 	return &Result{
 		TxID:      txID,
 		Success:   true,
@@ -335,22 +335,22 @@ func (e *Executor) executeCreateNode(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	label, ok := query.Parameters[ParamLabel]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'label'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Create the node
 	nodeID, err := e.GraphStore.CreateNode(tx, label)
 	if err != nil {
@@ -360,14 +360,14 @@ func (e *Executor) executeCreateNode(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to create node: %w", err)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	return &Result{
 		NodeID:    nodeID,
 		Success:   true,
@@ -381,32 +381,32 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	sourceID, ok := query.Parameters[ParamSource]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'source'")
 	}
-	
+
 	targetID, ok := query.Parameters[ParamTargetID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'targetId'")
 	}
-	
+
 	label, ok := query.Parameters[ParamLabel]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'label'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Create the edge
 	edgeID, err := e.GraphStore.CreateEdge(tx, sourceID, targetID, label)
 	if err != nil {
@@ -416,14 +416,14 @@ func (e *Executor) executeCreateEdge(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to create edge: %w", err)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	return &Result{
 		EdgeID:    edgeID,
 		Success:   true,
@@ -437,22 +437,22 @@ func (e *Executor) executeDeleteNode(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	nodeID, ok := query.Parameters[ParamID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Delete the node
 	err = e.GraphStore.DeleteNode(tx, nodeID)
 	if err != nil {
@@ -462,14 +462,14 @@ func (e *Executor) executeDeleteNode(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to delete node: %w", err)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	return &Result{
 		NodeID:    nodeID,
 		Success:   true,
@@ -483,22 +483,22 @@ func (e *Executor) executeDeleteEdge(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	edgeID, ok := query.Parameters[ParamID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Delete the edge
 	err = e.GraphStore.DeleteEdge(tx, edgeID)
 	if err != nil {
@@ -508,14 +508,14 @@ func (e *Executor) executeDeleteEdge(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to delete edge: %w", err)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	return &Result{
 		EdgeID:    edgeID,
 		Success:   true,
@@ -529,37 +529,37 @@ func (e *Executor) executeSetProperty(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	target, ok := query.Parameters[ParamTarget]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'target'")
 	}
-	
+
 	id, ok := query.Parameters[ParamID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
-	
+
 	name, ok := query.Parameters[ParamName]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'name'")
 	}
-	
+
 	value, ok := query.Parameters[ParamValue]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'value'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Set the property based on target type
 	var setErr error
 	if target == "node" {
@@ -572,7 +572,7 @@ func (e *Executor) executeSetProperty(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("invalid target: %s, must be 'node' or 'edge'", target)
 	}
-	
+
 	if setErr != nil {
 		// Rollback auto-transaction on error
 		if isAutoTx {
@@ -580,27 +580,27 @@ func (e *Executor) executeSetProperty(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to set property: %w", setErr)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	result := &Result{
 		Success:   true,
 		Operation: "SET_PROPERTY",
 		TxID:      txIDParam,
 	}
-	
+
 	// Set the appropriate ID field based on target
 	if target == "node" {
 		result.NodeID = id
 	} else {
 		result.EdgeID = id
 	}
-	
+
 	return result, nil
 }
 
@@ -609,32 +609,32 @@ func (e *Executor) executeRemoveProperty(query *Query) (*Result, error) {
 	if e.GraphStore == nil {
 		return nil, fmt.Errorf("graph store not available")
 	}
-	
+
 	// Get required parameters
 	target, ok := query.Parameters[ParamTarget]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'target'")
 	}
-	
+
 	id, ok := query.Parameters[ParamID]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'id'")
 	}
-	
+
 	name, ok := query.Parameters[ParamName]
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter 'name'")
 	}
-	
+
 	// Get transaction ID from parameters if provided
 	txIDParam, _ := query.Parameters[ParamTransactionID]
-	
+
 	// Get active transaction
 	tx, isAutoTx, err := e.GetActiveTransaction(txIDParam)
 	if err != nil {
 		return nil, fmt.Errorf("transaction error: %w", err)
 	}
-	
+
 	// Remove the property based on target type
 	var removeErr error
 	if target == "node" {
@@ -647,7 +647,7 @@ func (e *Executor) executeRemoveProperty(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("invalid target: %s, must be 'node' or 'edge'", target)
 	}
-	
+
 	if removeErr != nil {
 		// Rollback auto-transaction on error
 		if isAutoTx {
@@ -655,27 +655,27 @@ func (e *Executor) executeRemoveProperty(query *Query) (*Result, error) {
 		}
 		return nil, fmt.Errorf("failed to remove property: %w", removeErr)
 	}
-	
+
 	// Commit auto-transaction
 	if isAutoTx {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
-	
+
 	result := &Result{
 		Success:   true,
 		Operation: "REMOVE_PROPERTY",
 		TxID:      txIDParam,
 	}
-	
+
 	// Set the appropriate ID field based on target
 	if target == "node" {
 		result.NodeID = id
 	} else {
 		result.EdgeID = id
 	}
-	
+
 	return result, nil
 }
 

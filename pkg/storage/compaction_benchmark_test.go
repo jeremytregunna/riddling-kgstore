@@ -77,9 +77,9 @@ func setupCompactionBenchmark(b *testing.B, numberOfRecords int, recordSize int)
 // BenchmarkCompactionLogic measures the performance of the compaction algorithm
 func BenchmarkCompactionLogic(b *testing.B) {
 	tests := []struct {
-		name           string
+		name            string
 		numberOfRecords int
-		recordSize     int
+		recordSize      int
 	}{
 		{"Small_1K_Records_100B", 1000, 100},
 		{"Medium_10K_Records_100B", 10000, 100},
@@ -106,9 +106,9 @@ func BenchmarkCompactionLogic(b *testing.B) {
 // BenchmarkCompactionWithDifferentSizeSSTables measures compaction with varying SSTable sizes
 func BenchmarkCompactionWithDifferentSizeSSTables(b *testing.B) {
 	tests := []struct {
-		name          string
-		ssTableSizes  []int // Number of records per SSTable
-		recordSize    int   // Size of each record in bytes
+		name         string
+		ssTableSizes []int // Number of records per SSTable
+		recordSize   int   // Size of each record in bytes
 	}{
 		{"EqualSizedSSTables", []int{1000, 1000, 1000, 1000}, 100},
 		{"IncreasingSSTables", []int{500, 1000, 2000, 4000}, 100},
@@ -129,7 +129,7 @@ func BenchmarkCompactionWithDifferentSizeSSTables(b *testing.B) {
 			config := EngineConfig{
 				DataDir:              tempDir,
 				MemTableSize:         8 * 1024 * 1024, // Larger size to accommodate all records
-				SyncWrites:           false,            // Disable syncing for performance
+				SyncWrites:           false,           // Disable syncing for performance
 				Logger:               model.NewNoOpLogger(),
 				Comparator:           DefaultComparator,
 				BackgroundCompaction: false, // Disable background compaction for controlled tests
@@ -202,7 +202,7 @@ func BenchmarkCompactionWithVersioning(b *testing.B) {
 			config := EngineConfig{
 				DataDir:              tempDir,
 				MemTableSize:         1024 * 1024, // Small size to force frequent compactions
-				SyncWrites:           false,        // Disable syncing for performance
+				SyncWrites:           false,       // Disable syncing for performance
 				Logger:               model.NewNoOpLogger(),
 				Comparator:           DefaultComparator,
 				BackgroundCompaction: false, // Disable background compaction for controlled tests
@@ -225,7 +225,7 @@ func BenchmarkCompactionWithVersioning(b *testing.B) {
 			for i := 0; i < tt.numberOfRecords; i++ {
 				key := []byte(fmt.Sprintf("key-%08d", i))
 				value := []byte(fmt.Sprintf("value-v1-%08d", i))
-				
+
 				// Use version 1 for all initial records
 				err := memTable.PutWithVersion(key, value, 1)
 				if err != nil {
@@ -259,7 +259,7 @@ func BenchmarkCompactionWithVersioning(b *testing.B) {
 			for i := 0; i < recordsToUpdate; i++ {
 				key := []byte(fmt.Sprintf("key-%08d", i))
 				value := []byte(fmt.Sprintf("value-v2-%08d", i))
-				
+
 				// Use version 2 for updated records
 				err := updatedMemTable.PutWithVersion(key, value, 2)
 				if err != nil {

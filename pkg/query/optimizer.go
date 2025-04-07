@@ -56,16 +56,16 @@ func (o *Optimizer) Optimize(query *Query) (*Query, error) {
 		o.optimizeNeighborsQuery(optimized)
 	case QueryTypeFindPath:
 		o.optimizePathQuery(optimized)
-		
+
 	// Transaction operations
 	case QueryTypeBeginTransaction, QueryTypeCommitTransaction, QueryTypeRollbackTransaction:
 		// No specific optimizations for transaction operations
-		
+
 	// Write operations
-	case QueryTypeCreateNode, QueryTypeCreateEdge, QueryTypeDeleteNode, 
-	     QueryTypeDeleteEdge, QueryTypeSetProperty, QueryTypeRemoveProperty:
+	case QueryTypeCreateNode, QueryTypeCreateEdge, QueryTypeDeleteNode,
+		QueryTypeDeleteEdge, QueryTypeSetProperty, QueryTypeRemoveProperty:
 		// No specific optimizations for write operations yet
-		
+
 	default:
 		return nil, fmt.Errorf("unsupported query type: %s", query.Type)
 	}

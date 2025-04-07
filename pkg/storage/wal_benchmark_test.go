@@ -67,7 +67,7 @@ func BenchmarkWALAppend(b *testing.B) {
 				// Use a dynamic key to avoid any caching effects
 				dynamicKey := append([]byte(nil), key...)
 				dynamicKey = append(dynamicKey, byte(i%256))
-				
+
 				if err := wal.RecordPut(dynamicKey, value); err != nil {
 					b.Fatalf("Failed to record put operation: %v", err)
 				}
@@ -110,7 +110,7 @@ func BenchmarkWALAppendWithSync(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		dynamicKey := append([]byte(nil), key...)
 		dynamicKey = append(dynamicKey, byte(i%256))
-		
+
 		if err := wal.RecordPut(dynamicKey, value); err != nil {
 			b.Fatalf("Failed to record put operation: %v", err)
 		}
@@ -237,8 +237,8 @@ func BenchmarkWALReplay(b *testing.B) {
 // BenchmarkWALConcurrentAppends measures concurrent WAL append performance
 func BenchmarkWALConcurrentAppends(b *testing.B) {
 	tests := []struct {
-		name         string
-		concurrency  int
+		name          string
+		concurrency   int
 		transactional bool
 	}{
 		{"Concurrent_2Threads_NoTx", 2, false},
@@ -262,11 +262,11 @@ func BenchmarkWALConcurrentAppends(b *testing.B) {
 
 			b.ResetTimer()
 			b.SetParallelism(tt.concurrency)
-			
+
 			b.RunParallel(func(pb *testing.PB) {
 				var txID uint64
 				var err error
-				
+
 				// Start a transaction if needed
 				if tt.transactional {
 					txID, err = wal.BeginTransaction()
@@ -274,28 +274,28 @@ func BenchmarkWALConcurrentAppends(b *testing.B) {
 						b.Fatalf("Failed to begin transaction: %v", err)
 					}
 				}
-				
+
 				// Create a unique base key for this goroutine
 				keyBase := []byte("concurrent-key")
-				
+
 				i := 0
 				for pb.Next() {
 					// Create a unique key for each operation
 					key := append([]byte(nil), keyBase...)
 					key = append(key, byte(i%256))
 					i++
-					
+
 					if tt.transactional {
 						err = wal.RecordPutInTransaction(key, value, txID)
 					} else {
 						err = wal.RecordPut(key, value)
 					}
-					
+
 					if err != nil {
 						b.Fatalf("Failed to record operation: %v", err)
 					}
 				}
-				
+
 				// Commit the transaction if needed
 				if tt.transactional {
 					err = wal.CommitTransaction(txID)

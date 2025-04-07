@@ -75,9 +75,9 @@ func BenchmarkNodeLabelLookup(b *testing.B) {
 
 	// Test different data sizes
 	dataSizes := []struct {
-		name           string
-		labelsCount    int // Number of different labels
-		nodesPerLabel  int // Number of nodes per label
+		name          string
+		labelsCount   int // Number of different labels
+		nodesPerLabel int // Number of nodes per label
 	}{
 		{"Small_10Labels_100Nodes", 10, 100},
 		{"Medium_100Labels_100Nodes", 100, 100},
@@ -94,7 +94,7 @@ func BenchmarkNodeLabelLookup(b *testing.B) {
 				// Prepare benchmark data - populate the index
 				for labelNum := 0; labelNum < size.labelsCount; labelNum++ {
 					label := []byte(fmt.Sprintf("Label-%04d", labelNum))
-					
+
 					// Add nodes for this label
 					for nodeNum := 0; nodeNum < size.nodesPerLabel; nodeNum++ {
 						nodeID := []byte(fmt.Sprintf("Node-%04d-%06d", labelNum, nodeNum))
@@ -128,9 +128,9 @@ func BenchmarkNodeLabelLookup(b *testing.B) {
 // BenchmarkEdgeLabelLookup measures edge label index lookup performance
 func BenchmarkEdgeLabelLookup(b *testing.B) {
 	dataSizes := []struct {
-		name           string
-		labelsCount    int // Number of different edge labels
-		edgesPerLabel  int // Number of edges per label
+		name          string
+		labelsCount   int // Number of different edge labels
+		edgesPerLabel int // Number of edges per label
 	}{
 		{"Small_10Labels_100Edges", 10, 100},
 		{"Medium_100Labels_100Edges", 100, 100},
@@ -145,7 +145,7 @@ func BenchmarkEdgeLabelLookup(b *testing.B) {
 			// Populate the edge label index
 			for labelNum := 0; labelNum < size.labelsCount; labelNum++ {
 				label := []byte(fmt.Sprintf("EdgeType-%04d", labelNum))
-				
+
 				// Add edges for this label
 				for edgeNum := 0; edgeNum < size.edgesPerLabel; edgeNum++ {
 					// Create an edge ID in a format like "source-target"
@@ -194,7 +194,7 @@ func BenchmarkLabelIndexMixedOperations(b *testing.B) {
 			// Pre-populate with some data
 			const initialLabels = 10
 			const initialNodesPerLabel = 10
-			
+
 			for labelNum := 0; labelNum < initialLabels; labelNum++ {
 				label := []byte(fmt.Sprintf("Label-%04d", labelNum))
 				for nodeNum := 0; nodeNum < initialNodesPerLabel; nodeNum++ {
