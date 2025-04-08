@@ -119,7 +119,7 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 * **Documentation:**
     * [ ] Create API documentation.
     * [ ] Create user documentation.
-    * [ ] Create developer documentation.
+    * [x] Create developer documentation.
 * **Deployment:**
     * [ ] Create deployment scripts (using Docker or similar).
     * [ ] Create monitoring and alerting tools.

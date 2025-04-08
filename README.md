@@ -16,14 +16,7 @@ KGStore is designed as a single-file database format optimized for knowledge gra
 - **Lock-Free Data Structures**: High-performance concurrent operations
 - **gRPC Service**: Language-agnostic network interface with efficient Protocol Buffers encoding
 
-## Storage Architecture
-
-KGStore uses a Log-Structured Merge (LSM) tree architecture for high write throughput:
-- In-memory MemTable buffers recent writes
-- Immutable SSTables for persistent storage
-- Background compaction to merge SSTables
-- Bloom filters for efficient key lookups
-- Page-based storage for efficient I/O
+For detailed information about KGStore's architecture and implementation, please refer to the [Architecture Documentation](docs/ARCHITECTURE.md).
 
 ## Durability and Performance
 
