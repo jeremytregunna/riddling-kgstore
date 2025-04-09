@@ -1228,7 +1228,7 @@ func (w *WAL) readRecord(reader *bufio.Reader) (WALRecord, error) {
 }
 
 // ReplayToInterface replays WAL records to any MemTableInterface implementation
-func (w *WAL) ReplayToInterface(memTable MemTableInterface, options ReplayOptions) (ReplayStats, error) {
+func (w *WAL) ReplayToInterface(memTable *MemTable, options ReplayOptions) (ReplayStats, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1312,7 +1312,7 @@ func (w *WAL) scanTransactionsForInterface(headerSize int, options ReplayOptions
 }
 
 // applyStandaloneOperationsToInterface applies standalone operations to an interface
-func (w *WAL) applyStandaloneOperationsToInterface(headerSize int, memTable MemTableInterface, options ReplayOptions, stats ReplayStats) (ReplayStats, error) {
+func (w *WAL) applyStandaloneOperationsToInterface(headerSize int, memTable *MemTable, options ReplayOptions, stats ReplayStats) (ReplayStats, error) {
 	// Seek to the beginning of the data section
 	_, err := w.file.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
@@ -1391,7 +1391,7 @@ func (w *WAL) applyStandaloneOperationsToInterface(headerSize int, memTable MemT
 
 // applyTransactionsToInterface applies transaction operations to an interface implementation
 func (w *WAL) applyTransactionsToInterface(
-	memTable MemTableInterface,
+	memTable *MemTable,
 	txData transactionReplayData,
 	options ReplayOptions,
 	stats ReplayStats) (ReplayStats, error) {
@@ -1436,7 +1436,7 @@ func shouldSkipTransaction(txID uint64, txData transactionReplayData, options Re
 func (w *WAL) applyTransactionToInterface(
 	txID uint64, 
 	operations []WALRecord, 
-	memTable MemTableInterface,
+	memTable *MemTable,
 	txData transactionReplayData,
 	options ReplayOptions,
 	stats ReplayStats) ReplayStats {

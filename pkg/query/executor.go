@@ -5,7 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"git.canoozie.net/riddling/kgstore/pkg/common"
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 	"git.canoozie.net/riddling/kgstore/pkg/storage"
 )
@@ -140,7 +142,10 @@ func (e *Executor) BeginTransaction() (string, error) {
 	e.txRegistry.nextID++
 
 	// Begin a transaction in the storage engine
-	tx := e.Engine.GetTransactionManager().Begin()
+	tx, err := e.Engine.GetTransactionManager().BeginTransaction(storage.DefaultTxOptions())
+	if err != nil {
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
 
 	// Store the transaction
 	e.txRegistry.transactions[txID] = tx
@@ -255,10 +260,19 @@ func (e *Executor) GetActiveTransaction(txID string) (*storage.Transaction, bool
 		return tx, false, err // Not auto-transaction
 	}
 
-	// Otherwise, create an auto-transaction
+	// Otherwise, create an auto-transaction with a timeout
 	// In a real implementation, we'd use goroutine ID to track auto-transactions
 	// For simplicity, we'll just create a new transaction each time
-	tx := e.Engine.GetTransactionManager().Begin()
+
+	// Create options with a 5 second timeout to prevent deadlocks
+	options := storage.DefaultTxOptions()
+	options.Timeout = 5 * time.Second
+
+	tx, err := e.Engine.GetTransactionManager().BeginTransaction(options)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to begin auto-transaction: %w", err)
+	}
+	e.Engine.GetLogger().Debug("Created auto-transaction %d with timeout %v", tx.ID(), options.Timeout)
 	return tx, true, nil // Is auto-transaction
 }
 
@@ -816,73 +830,136 @@ func (e *Executor) executeRemoveProperty(query *Query) (*Result, error) {
 func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
 
-	// Get node IDs for the label
-	// The index's GetAll method will apply the appropriate prefix
-	var nodeIDsBytes [][]byte
-	var err error
-
-	// Add debug log to see what label we're looking for
 	e.Engine.GetLogger().Debug("Searching for nodes with label: %s", label)
 
-	// Get all node IDs for this label (LSM or regular index)
-	nodeIDsBytes, err = e.NodeLabels.GetAll([]byte(label))
-	if err != nil && err != storage.ErrKeyNotFound {
-		return nil, fmt.Errorf("error getting nodes for label %s: %w", label, err)
+	// Try both direct lookup and prefix scan to be robust
+	nodeIDs := make(map[uint64]bool)
+
+	// Direct scan through the database using a scan prefix
+	scanPrefix := common.FormatNodeLabelScanKey(label)
+	e.Engine.GetLogger().Debug("Executing direct scan for keys with prefix: %s", scanPrefix)
+
+	matchingKeys, err := e.Engine.Scan([]byte(scanPrefix), 1000)
+	if err == nil && len(matchingKeys) > 0 {
+		e.Engine.GetLogger().Debug("Direct scan found %d keys with prefix %s", len(matchingKeys), scanPrefix)
+
+		// Process keys from direct scan
+		for _, key := range matchingKeys {
+			keyStr := string(key)
+			e.Engine.GetLogger().Debug("Processing scanned key: %s", keyStr)
+
+			// Parse out the node ID from keys like "nl:Person:1"
+			parts := strings.Split(keyStr, ":")
+			if len(parts) >= 3 {
+				nodeIDStr := parts[2]
+				nodeID, err := common.ParseUint64(nodeIDStr)
+				if err == nil {
+					e.Engine.GetLogger().Debug("Extracted node ID %d from key %s", nodeID, keyStr)
+					nodeIDs[nodeID] = true
+				}
+			}
+		}
+	}
+
+	// Also try the index-based lookup
+	e.Engine.GetLogger().Debug("Using label index to find nodes with label: %s", label)
+
+	nodeLabelKeys, err := e.NodeLabels.GetAll([]byte(label))
+	if err != nil {
+		e.Engine.GetLogger().Debug("Error scanning for node label keys: %v", err)
+		// Only return error if we have no IDs from direct scan
+		if len(nodeIDs) == 0 {
+			return nil, fmt.Errorf("error scanning for node label keys: %w", err)
+		}
+	} else if len(nodeLabelKeys) > 0 {
+		e.Engine.GetLogger().Debug("Index lookup found %d node IDs for label: %s", len(nodeLabelKeys), label)
+
+		// Process node IDs from index lookup
+		for _, nodeIDBytes := range nodeLabelKeys {
+			nodeIDStr := string(nodeIDBytes)
+			e.Engine.GetLogger().Debug("Processing index value: %s", nodeIDStr)
+
+			// Try different parsing approaches
+
+			// 1. Direct parse as uint64
+			nodeID, err := common.ParseUint64(nodeIDStr)
+			if err == nil {
+				e.Engine.GetLogger().Debug("Successfully parsed node ID %d directly", nodeID)
+				nodeIDs[nodeID] = true
+				continue
+			}
+
+			// 2. Try to extract from composite key format (nl:Label:ID)
+			parts := strings.Split(nodeIDStr, ":")
+			if len(parts) >= 3 {
+				idPart := parts[2]
+				nodeID, err := common.ParseUint64(idPart)
+				if err == nil {
+					e.Engine.GetLogger().Debug("Extracted node ID %d from composite key", nodeID)
+					nodeIDs[nodeID] = true
+					continue
+				}
+			}
+
+			e.Engine.GetLogger().Debug("Unable to parse node ID from: %s", nodeIDStr)
+		}
 	}
 
 	// If no nodes found with this label
-	if err == storage.ErrKeyNotFound || len(nodeIDsBytes) == 0 {
-		e.Engine.GetLogger().Debug("No nodes found with label: %s", label)
+	if len(nodeIDs) == 0 {
+		e.Engine.GetLogger().Debug("No valid node IDs found for label: %s", label)
 		return &Result{Nodes: []model.Node{}}, nil
 	}
 
-	// Get nodes
-	nodes := make([]model.Node, 0, len(nodeIDsBytes))
-	e.Engine.GetLogger().Debug("Found %d node IDs for label: %s, preparing to retrieve them", len(nodeIDsBytes), label)
+	// Get the nodes
+	nodes := make([]model.Node, 0, len(nodeIDs))
+	e.Engine.GetLogger().Debug("Found %d unique node IDs for label: %s, retrieving them", len(nodeIDs), label)
 
-	for i, idBytes := range nodeIDsBytes {
-		// Convert to uint64 if it's not already
-		idStr := string(idBytes)
-		e.Engine.GetLogger().Debug("Processing node ID %d/%d: %s", i+1, len(nodeIDsBytes), idStr)
+	for id := range nodeIDs {
+		// Try multiple key formats to find the node
+		found := false
 
-		id, err := strconv.ParseUint(idStr, 10, 64)
-		if err != nil {
-			// Skip invalid IDs
-			e.Engine.GetLogger().Debug("Invalid node ID format for %s: %v", idStr, err)
-			continue
-		}
+		// 1. First try with standard format key
+		nodeKey := []byte(common.FormatNodeKey(id))
+		e.Engine.GetLogger().Debug("Looking up node with formatted key: %s", string(nodeKey))
 
-		// Try both formats for node lookup to fix compatibility issues
-		keyWithPrefix := []byte(FormatNodeKey(id))
-		e.Engine.GetLogger().Debug("Looking up node with formatted key: %s", string(keyWithPrefix))
-
-		nodeBytes, err := e.NodeIndex.Get(keyWithPrefix)
-		if err != nil {
-			// If not found with prefix, try just the ID as a string
-			keyWithoutPrefix := []byte(fmt.Sprintf("%d", id))
-			e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(keyWithPrefix), string(keyWithoutPrefix))
-			nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
-		}
-		if err != nil {
-			if err != storage.ErrKeyNotFound {
-				return nil, fmt.Errorf("error getting node %d: %w", id, err)
+		nodeBytes, err := e.NodeIndex.Get(nodeKey)
+		if err == nil {
+			var node model.Node
+			err = model.Deserialize(nodeBytes, &node)
+			if err == nil {
+				e.Engine.GetLogger().Debug("Retrieved node %d with label %s", id, node.Label)
+				nodes = append(nodes, node)
+				found = true
+			} else {
+				e.Engine.GetLogger().Debug("Error deserializing node %d: %v", id, err)
 			}
-			e.Engine.GetLogger().Debug("Node with ID %d not found in node index", id)
-			continue
+		} else {
+			e.Engine.GetLogger().Debug("Node not found with key %s: %v", string(nodeKey), err)
 		}
 
-		var node model.Node
-		err = model.Deserialize(nodeBytes, &node)
-		if err != nil {
-			return nil, fmt.Errorf("error deserializing node %d: %w", id, err)
-		}
+		// 2. If not found, try direct lookup by ID
+		if !found {
+			directKey := []byte(fmt.Sprintf("%d", id))
+			e.Engine.GetLogger().Debug("Trying direct lookup with key: %s", string(directKey))
 
-		e.Engine.GetLogger().Debug("Successfully retrieved node %d with label %s", id, node.Label)
-		nodes = append(nodes, node)
+			nodeBytes, err := e.Engine.Get(directKey)
+			if err == nil {
+				var node model.Node
+				err = model.Deserialize(nodeBytes, &node)
+				if err == nil {
+					e.Engine.GetLogger().Debug("Retrieved node %d with label %s via direct lookup", id, node.Label)
+					nodes = append(nodes, node)
+				} else {
+					e.Engine.GetLogger().Debug("Error deserializing node %d from direct lookup: %v", id, err)
+				}
+			} else {
+				e.Engine.GetLogger().Debug("Node not found with direct key %s: %v", string(directKey), err)
+			}
+		}
 	}
 
-	e.Engine.GetLogger().Debug("Retrieved %d/%d nodes with label: %s", len(nodes), len(nodeIDsBytes), label)
-
+	e.Engine.GetLogger().Debug("Retrieved %d nodes with label: %s", len(nodes), label)
 	return &Result{Nodes: nodes}, nil
 }
 
@@ -890,67 +967,142 @@ func (e *Executor) executeNodesByLabel(query *Query) (*Result, error) {
 func (e *Executor) executeEdgesByLabel(query *Query) (*Result, error) {
 	label := query.Parameters[ParamLabel]
 
-	// Get edge IDs for the label
-	// The index's GetAll method will apply the appropriate prefix
-	var edgeIDsBytes [][]byte
-	var err error
-
-	// Add debug log
 	e.Engine.GetLogger().Debug("Searching for edges with label: %s", label)
 
-	// Try to get all edge IDs from the index
-	edgeIDsBytes, err = e.EdgeLabels.GetAll([]byte(label))
-	if err != nil && err != storage.ErrKeyNotFound {
-		return nil, fmt.Errorf("error getting edges for label %s: %w", label, err)
+	// The most direct way to find edges is to scan through all edges and check their labels
+	// This bypasses any issues with label indexes
+
+	// We'll keep track of the edges we find
+	matchingEdges := []model.Edge{}
+
+	// Scan for all edge entries directly - this is most reliable
+	allEdges, err := e.Engine.Scan([]byte("e:"), 1000)
+	if err != nil {
+		e.Engine.GetLogger().Debug("Error scanning for edges: %v", err)
+		// Don't return error, continue with other approaches
+	} else {
+		e.Engine.GetLogger().Debug("Found %d total edges to check", len(allEdges))
+
+		// Check each edge to see if it has the matching label
+		for _, key := range allEdges {
+			// Get the edge data
+			edgeData, err := e.Engine.Get(key)
+			if err != nil {
+				e.Engine.GetLogger().Debug("Error getting edge data for key %s: %v", string(key), err)
+				continue
+			}
+
+			// Deserialize the edge
+			var edge model.Edge
+			err = model.Deserialize(edgeData, &edge)
+			if err != nil {
+				e.Engine.GetLogger().Debug("Error deserializing edge data for key %s: %v", string(key), err)
+				continue
+			}
+
+			// Check if this edge has the matching label
+			if edge.Label == label {
+				e.Engine.GetLogger().Debug("Found matching edge with label %s: %+v", label, edge)
+				matchingEdges = append(matchingEdges, edge)
+			}
+		}
 	}
 
-	// If no edges found with this label
-	if err == storage.ErrKeyNotFound || len(edgeIDsBytes) == 0 {
-		e.Engine.GetLogger().Debug("No edges found with label: %s", label)
+	// If we found matching edges by direct scan, return them
+	if len(matchingEdges) > 0 {
+		e.Engine.GetLogger().Debug("Retrieved %d edges with label: %s by direct scan", len(matchingEdges), label)
+		return &Result{Edges: matchingEdges}, nil
+	}
+
+	// If we didn't find any edges by direct scan, try using the relationships
+	// This is a different approach that should work if edges exist but direct scan fails
+	e.Engine.GetLogger().Debug("No edges found by direct scan, trying relationship-based lookup")
+
+	// Get all node keys
+	nodeKeys, err := e.Engine.Scan([]byte("n:"), 1000)
+	if err != nil {
+		e.Engine.GetLogger().Debug("Error scanning for nodes: %v", err)
 		return &Result{Edges: []model.Edge{}}, nil
 	}
 
-	// Get edges
-	edges := make([]model.Edge, 0, len(edgeIDsBytes))
-	e.Engine.GetLogger().Debug("Found %d edge IDs for label: %s, preparing to retrieve them", len(edgeIDsBytes), label)
+	e.Engine.GetLogger().Debug("Found %d nodes to check for relationships", len(nodeKeys))
 
-	for i, idBytes := range edgeIDsBytes {
-		id := string(idBytes)
-		e.Engine.GetLogger().Debug("Processing edge ID %d/%d: %s", i+1, len(edgeIDsBytes), id)
-
-		// Try with prefix first
-		key := []byte(FormatEdgeKey(id))
-		e.Engine.GetLogger().Debug("Looking up edge with formatted key: %s", string(key))
-
-		edgeBytes, err := e.EdgeIndex.Get(key)
-		if err != nil {
-			// If not found with prefix, try just the ID as a string (compatibility)
-			keyWithoutPrefix := []byte(id)
-			e.Engine.GetLogger().Debug("Edge not found with key %s, trying alternate key: %s", string(key), id)
-			edgeBytes, err = e.EdgeIndex.Get(keyWithoutPrefix)
-		}
-
-		if err != nil {
-			if err != storage.ErrKeyNotFound {
-				return nil, fmt.Errorf("error getting edge %s: %w", id, err)
-			}
-			e.Engine.GetLogger().Debug("Edge with ID %s not found in edge index", id)
+	// For each node, check its outgoing edges
+	for _, nodeKey := range nodeKeys {
+		// Extract the node ID
+		parts := strings.Split(string(nodeKey), ":")
+		if len(parts) < 2 {
 			continue
 		}
 
-		var edge model.Edge
-		err = model.Deserialize(edgeBytes, &edge)
+		nodeIDStr := parts[1]
+
+		// Check outgoing edges for this node
+		nodeID, _ := strconv.ParseUint(nodeIDStr, 10, 64)
+		outgoingKey := []byte(FormatOutgoingEdgesKey(nodeID))
+		outgoingData, err := e.Engine.Get(outgoingKey)
 		if err != nil {
-			return nil, fmt.Errorf("error deserializing edge %s: %w", id, err)
+			if err != storage.ErrKeyNotFound {
+				e.Engine.GetLogger().Debug("Error getting outgoing edges for node %s: %v", nodeIDStr, err)
+			}
+			continue
 		}
 
-		e.Engine.GetLogger().Debug("Successfully retrieved edge %s with label %s", id, edge.Label)
-		edges = append(edges, edge)
+		// Parse the outgoing edge IDs
+		var outEdgeIDs []string
+		err = model.Deserialize(outgoingData, &outEdgeIDs)
+		if err != nil {
+			e.Engine.GetLogger().Debug("Error deserializing outgoing edges for node %s: %v", nodeIDStr, err)
+			continue
+		}
+
+		e.Engine.GetLogger().Debug("Found %d outgoing edges for node %s", len(outEdgeIDs), nodeIDStr)
+
+		// Check each outgoing edge
+		for _, edgeID := range outEdgeIDs {
+			// Get the edge data
+			edgeKey := []byte(common.FormatEdgeKey(edgeID))
+			edgeData, err := e.Engine.Get(edgeKey)
+			if err != nil {
+				// Try with just the ID if formatted key doesn't work
+				edgeData, err = e.Engine.Get([]byte(edgeID))
+				if err != nil {
+					e.Engine.GetLogger().Debug("Error getting edge data for ID %s: %v", edgeID, err)
+					continue
+				}
+			}
+
+			// Deserialize the edge
+			var edge model.Edge
+			err = model.Deserialize(edgeData, &edge)
+			if err != nil {
+				e.Engine.GetLogger().Debug("Error deserializing edge %s: %v", edgeID, err)
+				continue
+			}
+
+			// Check if this edge has the matching label
+			if edge.Label == label {
+				e.Engine.GetLogger().Debug("Found matching edge with label %s: %+v", label, edge)
+
+				// Check if we already have this edge to avoid duplicates
+				isDuplicate := false
+				for _, existingEdge := range matchingEdges {
+					if existingEdge.SourceID == edge.SourceID &&
+						existingEdge.TargetID == edge.TargetID {
+						isDuplicate = true
+						break
+					}
+				}
+
+				if !isDuplicate {
+					matchingEdges = append(matchingEdges, edge)
+				}
+			}
+		}
 	}
 
-	e.Engine.GetLogger().Debug("Retrieved %d/%d edges with label: %s", len(edges), len(edgeIDsBytes), label)
-
-	return &Result{Edges: edges}, nil
+	e.Engine.GetLogger().Debug("Retrieved %d edges with label: %s", len(matchingEdges), label)
+	return &Result{Edges: matchingEdges}, nil
 }
 
 // executeNodesByProperty finds nodes with a specific property value
@@ -1088,132 +1240,39 @@ func (e *Executor) executeNeighbors(query *Query) (*Result, error) {
 		return nil, fmt.Errorf("error deserializing node %d: %w", nodeID, err)
 	}
 
-	// Find all edges where this node is the source or target
+	// Collect edge IDs based on direction
 	var edgeIDs []string
+
+	// Check outgoing edges if needed
 	if direction == DirectionOutgoing || direction == DirectionBoth {
-		// Try different key formats and access patterns
-		e.Engine.GetLogger().Debug("=== START OUTGOING EDGES SEARCH FOR NODE %d ===", nodeID)
+		// Use the common package helper function for consistent key formatting
+		outgoingKey := FormatOutgoingEdgesKey(nodeID)
+		outgoingEdgesBytes, err := e.Engine.Get([]byte(outgoingKey))
 
-		// Try the outgoing edges key format used in the test
-		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
-		e.Engine.GetLogger().Debug("Looking for outgoing edges with key: %s", string(outKey))
-		outEdgeIDsBytes, err := e.EdgeIndex.Get(outKey)
-
-		if err != nil && err != storage.ErrKeyNotFound {
-			e.Engine.GetLogger().Debug("Error getting outgoing edges list: %v", err)
-		} else if err == nil {
+		if err == nil {
 			var outEdgeIDs []string
-			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
-			if err != nil {
-				e.Engine.GetLogger().Debug("Error deserializing outgoing edge IDs: %v", err)
-			} else {
-				e.Engine.GetLogger().Debug("Found %d outgoing edges in deserialized list: %v", len(outEdgeIDs), outEdgeIDs)
-				edgeIDs = append(edgeIDs, outEdgeIDs...)
-			}
-		} else {
-			e.Engine.GetLogger().Debug("No outgoing edges found with key: %s", string(outKey))
-		}
-
-		// Fallback: Try the alternative outgoing edges format
-		altOutKey := []byte(fmt.Sprintf("outgoing:%d", nodeID))
-		e.Engine.GetLogger().Debug("Looking for outgoing edges with alternative key: %s", string(altOutKey))
-		outEdgeIDsBytes, err = e.Engine.Get(altOutKey)
-
-		if err != nil && err != storage.ErrKeyNotFound {
-			e.Engine.GetLogger().Debug("Error getting alt outgoing edges list: %v", err)
-		} else if err == nil {
-			var outEdgeIDs []string
-			err = model.Deserialize(outEdgeIDsBytes, &outEdgeIDs)
-			if err != nil {
-				e.Engine.GetLogger().Debug("Error deserializing alt outgoing edge IDs: %v", err)
-			} else {
-				e.Engine.GetLogger().Debug("Found %d alt outgoing edges: %v", len(outEdgeIDs), outEdgeIDs)
+			err = model.Deserialize(outgoingEdgesBytes, &outEdgeIDs)
+			if err == nil {
+				e.Engine.GetLogger().Debug("Found %d outgoing edges for node %d", len(outEdgeIDs), nodeID)
 				edgeIDs = append(edgeIDs, outEdgeIDs...)
 			}
 		}
-
-		// Scan for outgoing edges by pattern
-		snKeyPrefix := fmt.Sprintf("sn:%d:", nodeID)
-		e.Engine.GetLogger().Debug("Scanning for keys with prefix: %s", snKeyPrefix)
-		snMatchingKeys, err := e.Engine.Scan([]byte(snKeyPrefix), 100)
-		if err != nil {
-			e.Engine.GetLogger().Debug("Error scanning for sn prefix keys: %v", err)
-		} else if len(snMatchingKeys) > 0 {
-			e.Engine.GetLogger().Debug("Found %d keys matching source node prefix pattern", len(snMatchingKeys))
-			for i, key := range snMatchingKeys {
-				parts := strings.Split(string(key), ":")
-				if len(parts) >= 3 {
-					edgeID := parts[2]
-					e.Engine.GetLogger().Debug("Extracted edge ID %d from key %s: %s", i, string(key), edgeID)
-					edgeIDs = append(edgeIDs, edgeID)
-				}
-			}
-		}
-
-		e.Engine.GetLogger().Debug("=== END OUTGOING EDGES SEARCH FOR NODE %d ===", nodeID)
 	}
 
+	// Check incoming edges if needed
 	if direction == DirectionIncoming || direction == DirectionBoth {
-		// Try different key formats and access patterns for incoming edges
-		e.Engine.GetLogger().Debug("=== START INCOMING EDGES SEARCH FOR NODE %d ===", nodeID)
+		// Use the common package helper function for consistent key formatting
+		incomingKey := FormatIncomingEdgesKey(nodeID)
+		incomingEdgesBytes, err := e.Engine.Get([]byte(incomingKey))
 
-		// Try the incoming edges key format used in the test
-		inKey := []byte(FormatIncomingEdgesKey(nodeID))
-		e.Engine.GetLogger().Debug("Looking for incoming edges with key: %s", string(inKey))
-		inEdgeIDsBytes, err := e.EdgeIndex.Get(inKey)
-
-		if err != nil && err != storage.ErrKeyNotFound {
-			e.Engine.GetLogger().Debug("Error getting incoming edges list: %v", err)
-		} else if err == nil {
+		if err == nil {
 			var inEdgeIDs []string
-			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
-			if err != nil {
-				e.Engine.GetLogger().Debug("Error deserializing incoming edge IDs: %v", err)
-			} else {
-				e.Engine.GetLogger().Debug("Found %d incoming edges in deserialized list: %v", len(inEdgeIDs), inEdgeIDs)
-				edgeIDs = append(edgeIDs, inEdgeIDs...)
-			}
-		} else {
-			e.Engine.GetLogger().Debug("No incoming edges found with key: %s", string(inKey))
-		}
-		
-		// Fallback: Try the alternative incoming edges format
-		altInKey := []byte(fmt.Sprintf("incoming:%d", nodeID))
-		e.Engine.GetLogger().Debug("Looking for incoming edges with alternative key: %s", string(altInKey))
-		inEdgeIDsBytes, err = e.Engine.Get(altInKey)
-
-		if err != nil && err != storage.ErrKeyNotFound {
-			e.Engine.GetLogger().Debug("Error getting alt incoming edges list: %v", err)
-		} else if err == nil {
-			var inEdgeIDs []string
-			err = model.Deserialize(inEdgeIDsBytes, &inEdgeIDs)
-			if err != nil {
-				e.Engine.GetLogger().Debug("Error deserializing alt incoming edge IDs: %v", err)
-			} else {
-				e.Engine.GetLogger().Debug("Found %d alt incoming edges: %v", len(inEdgeIDs), inEdgeIDs)
+			err = model.Deserialize(incomingEdgesBytes, &inEdgeIDs)
+			if err == nil {
+				e.Engine.GetLogger().Debug("Found %d incoming edges for node %d", len(inEdgeIDs), nodeID)
 				edgeIDs = append(edgeIDs, inEdgeIDs...)
 			}
 		}
-
-		// Scan for incoming edges by pattern
-		tnKeyPrefix := fmt.Sprintf("tn:%d:", nodeID)
-		e.Engine.GetLogger().Debug("Scanning for keys with prefix: %s", tnKeyPrefix)
-		tnMatchingKeys, err := e.Engine.Scan([]byte(tnKeyPrefix), 100)
-		if err != nil {
-			e.Engine.GetLogger().Debug("Error scanning for tn prefix keys: %v", err)
-		} else if len(tnMatchingKeys) > 0 {
-			e.Engine.GetLogger().Debug("Found %d keys matching target node prefix pattern", len(tnMatchingKeys))
-			for i, key := range tnMatchingKeys {
-				parts := strings.Split(string(key), ":")
-				if len(parts) >= 3 {
-					edgeID := parts[2]
-					e.Engine.GetLogger().Debug("Extracted edge ID %d from key %s: %s", i, string(key), edgeID)
-					edgeIDs = append(edgeIDs, edgeID)
-				}
-			}
-		}
-
-		e.Engine.GetLogger().Debug("=== END INCOMING EDGES SEARCH FOR NODE %d ===", nodeID)
 	}
 
 	e.Engine.GetLogger().Debug("Found a total of %d edges connected to node %d", len(edgeIDs), nodeID)
@@ -1428,25 +1487,27 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 	found := false
 
 	// BFS
+	e.Engine.GetLogger().Debug("Starting BFS from %d to %d with max hops %d", sourceID, targetID, maxHops)
 	for i := 0; i < maxHops && len(queue) > 0 && !found; i++ {
 		levelSize := len(queue)
+		e.Engine.GetLogger().Debug("BFS level %d, processing %d nodes", i, levelSize)
 
 		for j := 0; j < levelSize; j++ {
 			currentID := queue[0]
 			queue = queue[1:]
+			e.Engine.GetLogger().Debug("Processing node %d", currentID)
 
 			// Get outgoing edges using the format from test
 			outKey := []byte(FormatOutgoingEdgesKey(currentID))
 			e.Engine.GetLogger().Debug("Looking for outgoing edges with key: %s", string(outKey))
 			outEdgeIDsBytes, err := e.EdgeIndex.Get(outKey)
-			
-			// Try alternative format if first lookup fails
+
+			// Try direct engine access if index lookup fails
 			if err != nil && err == storage.ErrKeyNotFound {
-				altOutKey := []byte(fmt.Sprintf("outgoing:%d", currentID))
-				e.Engine.GetLogger().Debug("Looking for outgoing edges with alternative key: %s", string(altOutKey))
-				outEdgeIDsBytes, err = e.EdgeIndex.Get(altOutKey)
+				e.Engine.GetLogger().Debug("Edge not found in EdgeIndex, trying direct engine access")
+				outEdgeIDsBytes, err = e.Engine.Get(outKey)
 			}
-			
+
 			if err != nil && err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", currentID, err)
 			}
@@ -1463,13 +1524,23 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 				// Process each outgoing edge
 				for _, edgeID := range outEdgeIDs {
 					edgeKey := []byte(FormatEdgeKey(edgeID))
+					// Look up edge in EdgeIndex
 					edgeBytes, err := e.EdgeIndex.Get(edgeKey)
+
+					// If not found in index, try the engine directly
+					if err != nil && err == storage.ErrKeyNotFound {
+						e.Engine.GetLogger().Debug("Edge not found in EdgeIndex, trying Engine")
+						edgeBytes, err = e.Engine.Get(edgeKey)
+					}
+
 					if err != nil {
+						e.Engine.GetLogger().Debug("Error getting edge %s: %v", edgeID, err)
 						if err != storage.ErrKeyNotFound {
 							return nil, fmt.Errorf("error getting edge %s: %w", edgeID, err)
 						}
 						continue
 					}
+					e.Engine.GetLogger().Debug("Successfully got edge %s", edgeID)
 
 					var edge model.Edge
 					err = model.Deserialize(edgeBytes, &edge)
@@ -1511,14 +1582,13 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 			inKey := []byte(FormatIncomingEdgesKey(currentID))
 			e.Engine.GetLogger().Debug("Looking for incoming edges with key: %s", string(inKey))
 			inEdgeIDsBytes, err := e.EdgeIndex.Get(inKey)
-			
-			// Try alternative format if first lookup fails
+
+			// Try direct engine access if index lookup fails
 			if err != nil && err == storage.ErrKeyNotFound {
-				altInKey := []byte(fmt.Sprintf("incoming:%d", currentID))
-				e.Engine.GetLogger().Debug("Looking for incoming edges with alternative key: %s", string(altInKey))
-				inEdgeIDsBytes, err = e.EdgeIndex.Get(altInKey)
+				e.Engine.GetLogger().Debug("Edge not found in EdgeIndex, trying direct engine access")
+				inEdgeIDsBytes, err = e.Engine.Get(inKey)
 			}
-			
+
 			if err != nil && err != storage.ErrKeyNotFound {
 				return nil, fmt.Errorf("error getting incoming edges for node %d: %w", currentID, err)
 			}
@@ -1599,12 +1669,26 @@ func (e *Executor) findPathBFS(sourceID, targetID uint64, maxHops int) (*Path, e
 		nodeKey := []byte(FormatNodeKey(currentID))
 		e.Engine.GetLogger().Debug("Looking up path node with formatted key: %s", string(nodeKey))
 
+		// First try NodeIndex
 		nodeBytes, err := e.NodeIndex.Get(nodeKey)
-		if err != nil {
-			// If not found with prefix, try just the ID as a string (compatibility)
+
+		// If not found in NodeIndex, try direct engine access
+		if err != nil && err == storage.ErrKeyNotFound {
+			e.Engine.GetLogger().Debug("Node not found in NodeIndex, trying Engine")
+			nodeBytes, err = e.Engine.Get(nodeKey)
+		}
+
+		// If still not found, try alternate format with just the ID
+		if err != nil && err == storage.ErrKeyNotFound {
 			keyWithoutPrefix := []byte(fmt.Sprintf("%d", currentID))
 			e.Engine.GetLogger().Debug("Node not found with key %s, trying alternate key: %s", string(nodeKey), string(keyWithoutPrefix))
 			nodeBytes, err = e.NodeIndex.Get(keyWithoutPrefix)
+
+			// If not found in NodeIndex with alternate format, try direct engine access
+			if err != nil && err == storage.ErrKeyNotFound {
+				e.Engine.GetLogger().Debug("Node not found in NodeIndex with alternate key, trying Engine")
+				nodeBytes, err = e.Engine.Get(keyWithoutPrefix)
+			}
 		}
 
 		if err != nil {

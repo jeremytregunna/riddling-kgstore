@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"git.canoozie.net/riddling/kgstore/pkg/common"
 	"git.canoozie.net/riddling/kgstore/pkg/model"
 )
 
@@ -73,20 +74,11 @@ func NewGraphStore(engine *StorageEngine, logger model.Logger) (*GraphStore, err
 	}, nil
 }
 
-// Key format constants for serialization
-const (
-	nodeKeyPrefix    = "n:"  // Prefix for node keys
-	edgeKeyPrefix    = "e:"  // Prefix for edge keys
-	nodeLabelPrefix  = "nl:" // Prefix for node label index
-	edgeLabelPrefix  = "el:" // Prefix for edge label index
-	nodePropPrefix   = "np:" // Prefix for node property index
-	edgePropPrefix   = "ep:" // Prefix for edge property index
-	sourceNodePrefix = "sn:" // Prefix for source node index
-	targetNodePrefix = "tn:" // Prefix for target node index
-)
 
 // CreateNode creates a new node with the given label
 func (g *GraphStore) CreateNode(tx *Transaction, label string) (string, error) {
+	g.logger.Debug("GraphStore.CreateNode - Starting with tx %d", tx.id)
+	
 	// Generate a new node ID
 	nodeID := g.nodeIDCounter.Add(1) // Atomic increment
 	node := model.NewNode(nodeID, label)
@@ -98,55 +90,93 @@ func (g *GraphStore) CreateNode(tx *Transaction, label string) (string, error) {
 		return "", fmt.Errorf("failed to serialize node: %w", err)
 	}
 
-	// Create the node key with prefix (n:nodeID)
-	nodeKey := []byte(nodeKeyPrefix + nodeIDStr)
+	// Create the node key with prefix using common package
+	nodeKey := []byte(common.FormatNodeKey(nodeID))
 
-	// Store the node in the database with the prefix
-	if err := g.engine.Put(nodeKey, nodeData); err != nil {
+	g.logger.Debug("GraphStore.CreateNode - Storing node %s with key %s using tx %d", 
+		nodeIDStr, string(nodeKey), tx.id)
+	
+	// Store the node in the database with the prefix, using the transaction
+	if err := g.engine.PutWithTx(tx, nodeKey, nodeData); err != nil {
+		g.logger.Debug("GraphStore.CreateNode - Failed to store node: %v", err)
 		return "", fmt.Errorf("failed to store node: %w", err)
 	}
 
 	// Also store with just the ID as key for compatibility with some access patterns
 	nodeKeyWithoutPrefix := []byte(nodeIDStr)
 	g.logger.Debug("Also storing node with raw ID key: %s", nodeIDStr)
-	if err := g.engine.Put(nodeKeyWithoutPrefix, nodeData); err != nil {
+	if err := g.engine.PutWithTx(tx, nodeKeyWithoutPrefix, nodeData); err != nil {
 		g.logger.Warn("Failed to store node with raw ID key: %v", err)
 		// Continue even if this fails, not critical
 	}
 
 	// Add to the label index - this is for compatibility with old index approach
-	labelKey := []byte(nodeLabelPrefix + label + ":" + nodeIDStr)
-	if err := g.engine.Put(labelKey, []byte{}); err != nil {
+	labelKey := []byte(common.FormatNodeLabelKey(label, nodeID))
+	g.logger.Debug("GraphStore.CreateNode - Updating label index with key %s using tx %d", 
+		string(labelKey), tx.id)
+	
+	if err := g.engine.PutWithTx(tx, labelKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update label index: %w", err)
 	}
 
 	// Also add to node label index (needed especially for LSM-based index)
-	nlIdx, err := NewNodeLabelIndex(g.engine, g.logger)
-	if err != nil {
-		g.logger.Warn("Failed to create node label index for adding node %s with label %s: %v", nodeIDStr, label, err)
-	} else {
-		err = nlIdx.Put([]byte(label), []byte(nodeIDStr))
-		if err != nil {
-			g.logger.Warn("Failed to add node %s to label index for label %s: %v", nodeIDStr, label, err)
-		}
+	// This was using a direct Put which was causing the deadlock!
+	// Use a specific transaction-based operation to add to the index
+	g.logger.Debug("GraphStore.CreateNode - Adding to node label index for label %s -> %s using tx %d", 
+		label, nodeIDStr, tx.id)
+	
+	// Instead of using the LSM-based index directly which uses engine.Put,
+	// store it with the transaction, same as we did above
+	nodeLabelKey := []byte(common.FormatNodeLabelScanKey(label) + nodeIDStr)
+	if err := g.engine.PutWithTx(tx, nodeLabelKey, []byte{}); err != nil {
+		g.logger.Warn("Failed to add node %s to label index for label %s: %v", nodeIDStr, label, err)
 	}
 
 	g.logger.Debug("Created node %s with label %s", nodeIDStr, label)
+	g.logger.Debug("GraphStore.CreateNode - Successfully created node %s using tx %d", 
+		nodeIDStr, tx.id)
 	return nodeIDStr, nil
 }
 
 // GetNode retrieves a node by ID
 func (g *GraphStore) GetNode(nodeID string) (*model.Node, error) {
-	// Create the node key
-	nodeKey := []byte(nodeKeyPrefix + nodeID)
+	// Parse node ID as uint64
+	nodeIDUint, err := common.ParseUint64(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid node ID: %w", err)
+	}
+
+	// Create the node key using common package
+	nodeKey := []byte(common.FormatNodeKey(nodeIDUint))
+	g.logger.Debug("GraphStore.GetNode - Looking up node with key: %s", string(nodeKey))
 
 	// Retrieve the node data from the database
 	nodeData, err := g.engine.Get(nodeKey)
 	if err != nil {
 		if errors.Is(err, ErrKeyNotFound) {
-			return nil, ErrNodeNotFound
+			// Try alternative key format (without prefix)
+			rawNodeKey := []byte(nodeID)
+			g.logger.Debug("GraphStore.GetNode - Node not found with key %s, trying raw ID: %s", 
+				string(nodeKey), string(rawNodeKey))
+			
+			rawNodeData, rawErr := g.engine.Get(rawNodeKey)
+			if rawErr != nil {
+				if errors.Is(rawErr, ErrKeyNotFound) {
+					g.logger.Debug("GraphStore.GetNode - Node not found with either key format: %s or %s", 
+						string(nodeKey), string(rawNodeKey))
+					return nil, ErrNodeNotFound
+				}
+				return nil, fmt.Errorf("failed to retrieve node with raw ID: %w", rawErr)
+			}
+			
+			// Use the raw node data instead
+			g.logger.Debug("GraphStore.GetNode - Found node with raw ID: %s", string(rawNodeKey))
+			nodeData = rawNodeData
+		} else {
+			return nil, fmt.Errorf("failed to retrieve node: %w", err)
 		}
-		return nil, fmt.Errorf("failed to retrieve node: %w", err)
+	} else {
+		g.logger.Debug("GraphStore.GetNode - Found node with prefixed key: %s", string(nodeKey))
 	}
 
 	// Deserialize the node
@@ -155,6 +185,8 @@ func (g *GraphStore) GetNode(nodeID string) (*model.Node, error) {
 		return nil, fmt.Errorf("failed to deserialize node: %w", err)
 	}
 
+	g.logger.Debug("GraphStore.GetNode - Successfully deserialized node %s with label %s", 
+		nodeID, node.Label)
 	return node, nil
 }
 
@@ -166,17 +198,23 @@ func (g *GraphStore) DeleteNode(tx *Transaction, nodeID string) error {
 		return err // Either ErrNodeNotFound or another error
 	}
 
-	// Create the node key
-	nodeKey := []byte(nodeKeyPrefix + nodeID)
+	// Parse node ID as uint64
+	nodeIDUint, err := common.ParseUint64(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid node ID: %w", err)
+	}
+
+	// Create the node key using common package
+	nodeKey := []byte(common.FormatNodeKey(nodeIDUint))
 
 	// Delete the node from the database
-	if err := g.engine.Delete(nodeKey); err != nil {
+	if err := g.engine.DeleteWithTx(tx, nodeKey); err != nil {
 		return fmt.Errorf("failed to delete node: %w", err)
 	}
 
 	// Remove from the label index
-	labelKey := []byte(nodeLabelPrefix + node.Label + ":" + nodeID)
-	if err := g.engine.Delete(labelKey); err != nil {
+	labelKey := []byte(common.FormatNodeLabelKey(node.Label, nodeIDUint))
+	if err := g.engine.DeleteWithTx(tx, labelKey); err != nil {
 		g.logger.Warn("Failed to remove node %s from label index: %v", nodeID, err)
 	}
 
@@ -193,13 +231,25 @@ func (g *GraphStore) DeleteNode(tx *Transaction, nodeID string) error {
 
 // CreateEdge creates a new edge between two nodes
 func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label string) (string, error) {
+	g.logger.Debug("GraphStore.CreateEdge - Starting with tx %d, source %s, target %s, label %s", 
+		tx.id, sourceID, targetID, label)
+		
 	// Check if source and target nodes exist
-	if _, err := g.GetNode(sourceID); err != nil {
+	sourceNode, err := g.GetNode(sourceID)
+	if err != nil {
+		g.logger.Debug("GraphStore.CreateEdge - Source node %s not found: %v", sourceID, err)
 		return "", fmt.Errorf("source node: %w", err)
 	}
-	if _, err := g.GetNode(targetID); err != nil {
+	g.logger.Debug("GraphStore.CreateEdge - Found source node %s with label %s", 
+		sourceID, sourceNode.Label)
+	
+	targetNode, err := g.GetNode(targetID)
+	if err != nil {
+		g.logger.Debug("GraphStore.CreateEdge - Target node %s not found: %v", targetID, err)
 		return "", fmt.Errorf("target node: %w", err)
 	}
+	g.logger.Debug("GraphStore.CreateEdge - Found target node %s with label %s", 
+		targetID, targetNode.Label)
 
 	// Generate a new edge ID
 	edgeID := g.edgeIDCounter.Add(1) // Atomic increment
@@ -214,48 +264,46 @@ func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label strin
 		return "", fmt.Errorf("failed to serialize edge: %w", err)
 	}
 
-	// Create the edge key with prefix (e:edgeID)
-	edgeKey := []byte(edgeKeyPrefix + edgeIDStr)
+	// Create the edge key with prefix using common package
+	edgeKey := []byte(common.FormatEdgeKey(edgeIDStr))
+	g.logger.Debug("GraphStore.CreateEdge - Storing edge with key: %s", string(edgeKey))
 
-	// Store the edge in the database with the prefix
-	if err := g.engine.Put(edgeKey, edgeData); err != nil {
+	// Store the edge in the database with the prefix, using the transaction
+	if err := g.engine.PutWithTx(tx, edgeKey, edgeData); err != nil {
 		return "", fmt.Errorf("failed to store edge: %w", err)
 	}
 
-	// Also store with just the ID as key for compatibility with some access patterns
-	edgeKeyWithoutPrefix := []byte(edgeIDStr)
-	g.logger.Debug("Also storing edge with raw ID key: %s", edgeIDStr)
-	if err := g.engine.Put(edgeKeyWithoutPrefix, edgeData); err != nil {
-		g.logger.Warn("Failed to store edge with raw ID key: %v", err)
-		// Continue even if this fails, not critical
-	}
-
-	// Add to the label index - compatibility with old approach
-	labelKey := []byte(edgeLabelPrefix + label + ":" + edgeIDStr)
-	if err := g.engine.Put(labelKey, []byte{}); err != nil {
+	// Add to the label index using common package
+	labelKey := []byte(common.FormatEdgeLabelKey(label, edgeIDStr))
+	g.logger.Debug("GraphStore.CreateEdge - Adding to edge label index with key: %s", string(labelKey))
+	
+	if err := g.engine.PutWithTx(tx, labelKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update label index: %w", err)
 	}
-
-	// Also add to edge label index using the proper index
-	elIdx, err := NewEdgeLabelIndex(g.engine, g.logger)
-	if err != nil {
-		g.logger.Warn("Failed to create edge label index for adding edge %s with label %s: %v", edgeIDStr, label, err)
-	} else {
-		err = elIdx.Put([]byte(label), []byte(edgeIDStr))
-		if err != nil {
-			g.logger.Warn("Failed to add edge %s to label index for label %s: %v", edgeIDStr, label, err)
-		}
+	
+	// Also add to edge label scan index (needed for LSM-based index and direct scans)
+	edgeLabelScanKey := []byte(common.FormatEdgeLabelScanKey(label) + edgeIDStr)
+	g.logger.Debug("GraphStore.CreateEdge - Adding to edge label scan index with key: %s", string(edgeLabelScanKey))
+	
+	if err := g.engine.PutWithTx(tx, edgeLabelScanKey, []byte{}); err != nil {
+		g.logger.Warn("Failed to add edge %s to label scan index for label %s: %v", edgeIDStr, label, err)
 	}
 
-	// Add to the source node index with prefix (sn:)
-	sourceKey := []byte(sourceNodePrefix + sourceID + ":" + edgeIDStr)
-	if err := g.engine.Put(sourceKey, []byte{}); err != nil {
+	// Parse source ID as uint64
+	sourceIDUint, err := common.ParseUint64(sourceID)
+	if err != nil {
+		return "", fmt.Errorf("invalid source ID: %w", err)
+	}
+
+	// Add to the source node index using common package
+	sourceKey := []byte(common.FormatSourceEdgeKey(sourceIDUint, edgeIDStr))
+	if err := g.engine.PutWithTx(tx, sourceKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update source node index: %w", err)
 	}
 
-	// Also store with outgoing:node_id for compatibility
-	outgoingKey := []byte(fmt.Sprintf("outgoing:%s", sourceID))
-	outgoingEdges, err := g.engine.Get(outgoingKey)
+	// Also store in outgoing edges list
+	outgoingKey := []byte(common.FormatOutgoingEdgesKey(sourceIDUint))
+	outgoingEdges, err := g.engine.GetWithTx(tx, outgoingKey)
 	if err != nil && err != ErrKeyNotFound {
 		g.logger.Warn("Failed to get outgoing edges for node %s: %v", sourceID, err)
 	}
@@ -288,22 +336,28 @@ func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label strin
 	} else {
 		g.logger.Debug("Storing %d outgoing edges for node %s with key %s: %v",
 			len(outEdgeIDs), sourceID, string(outgoingKey), outEdgeIDs)
-		if err := g.engine.Put(outgoingKey, outData); err != nil {
+		if err := g.engine.PutWithTx(tx, outgoingKey, outData); err != nil {
 			g.logger.Warn("Failed to update outgoing edges for node %s: %v", sourceID, err)
 		} else {
 			g.logger.Debug("Successfully stored outgoing edges for node %s", sourceID)
 		}
 	}
 
-	// Add to the target node index with prefix (tn:)
-	targetKey := []byte(targetNodePrefix + targetID + ":" + edgeIDStr)
-	if err := g.engine.Put(targetKey, []byte{}); err != nil {
+	// Parse target ID as uint64
+	targetIDUint, err := common.ParseUint64(targetID)
+	if err != nil {
+		return "", fmt.Errorf("invalid target ID: %w", err)
+	}
+
+	// Add to the target node index using common package
+	targetKey := []byte(common.FormatTargetEdgeKey(targetIDUint, edgeIDStr))
+	if err := g.engine.PutWithTx(tx, targetKey, []byte{}); err != nil {
 		return "", fmt.Errorf("failed to update target node index: %w", err)
 	}
 
-	// Also store with incoming:node_id for compatibility
-	incomingKey := []byte(fmt.Sprintf("incoming:%s", targetID))
-	incomingEdges, err := g.engine.Get(incomingKey)
+	// Also store in incoming edges list
+	incomingKey := []byte(common.FormatIncomingEdgesKey(targetIDUint))
+	incomingEdges, err := g.engine.GetWithTx(tx, incomingKey)
 	if err != nil && err != ErrKeyNotFound {
 		g.logger.Warn("Failed to get incoming edges for node %s: %v", targetID, err)
 	}
@@ -330,7 +384,7 @@ func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label strin
 	if err != nil {
 		g.logger.Warn("Failed to serialize incoming edges for node %s: %v", targetID, err)
 	} else {
-		if err := g.engine.Put(incomingKey, inData); err != nil {
+		if err := g.engine.PutWithTx(tx, incomingKey, inData); err != nil {
 			g.logger.Warn("Failed to update incoming edges for node %s: %v", targetID, err)
 		}
 	}
@@ -341,8 +395,9 @@ func (g *GraphStore) CreateEdge(tx *Transaction, sourceID, targetID, label strin
 
 // GetEdge retrieves an edge by ID
 func (g *GraphStore) GetEdge(edgeID string) (*model.Edge, error) {
-	// Create the edge key
-	edgeKey := []byte(edgeKeyPrefix + edgeID)
+	// Create the edge key using common package
+	edgeKey := []byte(common.FormatEdgeKey(edgeID))
+	g.logger.Debug("GraphStore.GetEdge - Looking up edge with key: %s", string(edgeKey))
 
 	// Retrieve the edge data from the database
 	edgeData, err := g.engine.Get(edgeKey)
@@ -370,33 +425,31 @@ func (g *GraphStore) DeleteEdge(tx *Transaction, edgeID string) error {
 		return err // Either ErrEdgeNotFound or another error
 	}
 
-	// Create the edge key
-	edgeKey := []byte(edgeKeyPrefix + edgeID)
+	// Create the edge key using common package
+	edgeKey := []byte(common.FormatEdgeKey(edgeID))
 
 	// Delete the edge from the database
-	if err := g.engine.Delete(edgeKey); err != nil {
+	if err := g.engine.DeleteWithTx(tx, edgeKey); err != nil {
 		return fmt.Errorf("failed to delete edge: %w", err)
 	}
 
-	// Remove from the label index
-	labelKey := []byte(edgeLabelPrefix + edge.Label + ":" + edgeID)
-	if err := g.engine.Delete(labelKey); err != nil {
+	// Remove from the label index using common package
+	labelKey := []byte(common.FormatEdgeLabelKey(edge.Label, edgeID))
+	if err := g.engine.DeleteWithTx(tx, labelKey); err != nil {
 		g.logger.Warn("Failed to remove edge %s from label index: %v", edgeID, err)
 	}
 
-	// Get source and target node IDs as strings
-	sourceID := fmt.Sprintf("%d", edge.SourceID)
-	targetID := fmt.Sprintf("%d", edge.TargetID)
+	// Using common package to generate keys from source and target IDs directly
 
-	// Remove from the source node index
-	sourceKey := []byte(sourceNodePrefix + sourceID + ":" + edgeID)
-	if err := g.engine.Delete(sourceKey); err != nil {
+	// Remove from the source node index using common package
+	sourceKey := []byte(common.FormatSourceEdgeKey(edge.SourceID, edgeID))
+	if err := g.engine.DeleteWithTx(tx, sourceKey); err != nil {
 		g.logger.Warn("Failed to remove edge %s from source node index: %v", edgeID, err)
 	}
 
-	// Remove from the target node index
-	targetKey := []byte(targetNodePrefix + targetID + ":" + edgeID)
-	if err := g.engine.Delete(targetKey); err != nil {
+	// Remove from the target node index using common package
+	targetKey := []byte(common.FormatTargetEdgeKey(edge.TargetID, edgeID))
+	if err := g.engine.DeleteWithTx(tx, targetKey); err != nil {
 		g.logger.Warn("Failed to remove edge %s from target node index: %v", edgeID, err)
 	}
 
@@ -424,15 +477,21 @@ func (g *GraphStore) SetNodeProperty(tx *Transaction, nodeID, name, value string
 		return fmt.Errorf("failed to serialize node: %w", err)
 	}
 
-	// Update the node in the database
-	nodeKey := []byte(nodeKeyPrefix + nodeID)
-	if err := g.engine.Put(nodeKey, nodeData); err != nil {
+	// Parse node ID as uint64
+	nodeIDUint, err := common.ParseUint64(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid node ID: %w", err)
+	}
+
+	// Update the node in the database using common package
+	nodeKey := []byte(common.FormatNodeKey(nodeIDUint))
+	if err := g.engine.PutWithTx(tx, nodeKey, nodeData); err != nil {
 		return fmt.Errorf("failed to update node: %w", err)
 	}
 
-	// Add to the property index
-	propKey := []byte(nodePropPrefix + name + ":" + value + ":" + nodeID)
-	if err := g.engine.Put(propKey, []byte{}); err != nil {
+	// Add to the property index using common package
+	propKey := []byte(common.FormatNodePropertyKey(name, value, nodeID))
+	if err := g.engine.PutWithTx(tx, propKey, []byte{}); err != nil {
 		return fmt.Errorf("failed to update property index: %w", err)
 	}
 
@@ -457,15 +516,15 @@ func (g *GraphStore) SetEdgeProperty(tx *Transaction, edgeID, name, value string
 		return fmt.Errorf("failed to serialize edge: %w", err)
 	}
 
-	// Update the edge in the database
-	edgeKey := []byte(edgeKeyPrefix + edgeID)
-	if err := g.engine.Put(edgeKey, edgeData); err != nil {
+	// Update the edge in the database using common package
+	edgeKey := []byte(common.FormatEdgeKey(edgeID))
+	if err := g.engine.PutWithTx(tx, edgeKey, edgeData); err != nil {
 		return fmt.Errorf("failed to update edge: %w", err)
 	}
 
-	// Add to the property index
-	propKey := []byte(edgePropPrefix + name + ":" + value + ":" + edgeID)
-	if err := g.engine.Put(propKey, []byte{}); err != nil {
+	// Add to the property index using common package
+	propKey := []byte(common.FormatEdgePropertyKey(name, value, edgeID))
+	if err := g.engine.PutWithTx(tx, propKey, []byte{}); err != nil {
 		return fmt.Errorf("failed to update property index: %w", err)
 	}
 
@@ -497,15 +556,21 @@ func (g *GraphStore) RemoveNodeProperty(tx *Transaction, nodeID, name string) er
 		return fmt.Errorf("failed to serialize node: %w", err)
 	}
 
-	// Update the node in the database
-	nodeKey := []byte(nodeKeyPrefix + nodeID)
-	if err := g.engine.Put(nodeKey, nodeData); err != nil {
+	// Parse node ID as uint64
+	nodeIDUint, err := common.ParseUint64(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid node ID: %w", err)
+	}
+
+	// Update the node in the database using common package
+	nodeKey := []byte(common.FormatNodeKey(nodeIDUint))
+	if err := g.engine.PutWithTx(tx, nodeKey, nodeData); err != nil {
 		return fmt.Errorf("failed to update node: %w", err)
 	}
 
-	// Remove from the property index
-	propKey := []byte(nodePropPrefix + name + ":" + oldValue + ":" + nodeID)
-	if err := g.engine.Delete(propKey); err != nil {
+	// Remove from the property index using common package
+	propKey := []byte(common.FormatNodePropertyKey(name, oldValue, nodeID))
+	if err := g.engine.DeleteWithTx(tx, propKey); err != nil {
 		g.logger.Warn("Failed to remove node %s from property index: %v", nodeID, err)
 	}
 
@@ -537,15 +602,15 @@ func (g *GraphStore) RemoveEdgeProperty(tx *Transaction, edgeID, name string) er
 		return fmt.Errorf("failed to serialize edge: %w", err)
 	}
 
-	// Update the edge in the database
-	edgeKey := []byte(edgeKeyPrefix + edgeID)
-	if err := g.engine.Put(edgeKey, edgeData); err != nil {
+	// Update the edge in the database using common package
+	edgeKey := []byte(common.FormatEdgeKey(edgeID))
+	if err := g.engine.PutWithTx(tx, edgeKey, edgeData); err != nil {
 		return fmt.Errorf("failed to update edge: %w", err)
 	}
 
-	// Remove from the property index
-	propKey := []byte(edgePropPrefix + name + ":" + oldValue + ":" + edgeID)
-	if err := g.engine.Delete(propKey); err != nil {
+	// Remove from the property index using common package
+	propKey := []byte(common.FormatEdgePropertyKey(name, oldValue, edgeID))
+	if err := g.engine.DeleteWithTx(tx, propKey); err != nil {
 		g.logger.Warn("Failed to remove edge %s from property index: %v", edgeID, err)
 	}
 

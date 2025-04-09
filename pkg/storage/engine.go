@@ -22,8 +22,8 @@ var (
 type StorageEngine struct {
 	mu                   sync.RWMutex
 	config               EngineConfig
-	memTable             MemTableInterface   // Current MemTable for writes - can be standard or lock-free
-	immMemTables         []MemTableInterface // Immutable MemTables waiting to be flushed
+	memTable             *MemTable          // Current MemTable for writes
+	immMemTables         []*MemTable        // Immutable MemTables waiting to be flushed
 	sstables             []*SSTable          // Sorted String Tables (persistent storage)
 	wal                  *WAL                // Write-Ahead Log
 	logger               model.Logger        // Logger for storage engine operations
@@ -33,8 +33,12 @@ type StorageEngine struct {
 	nextSSTableID        uint64              // Next SSTable ID to use
 	leveledCompactor     *LeveledCompaction  // Manages the leveled compaction strategy
 	txManager            *TransactionManager // Transaction manager for atomic operations
+	snapshotManager      *SnapshotManager    // Manages database snapshots for read isolation
 	useLSMNodeLabelIndex bool                // Whether to use LSM-tree based node label index
 	usePropertyIndex     bool                // Whether to use specialized property index
+	dbGeneration         uint64              // Database generation identifier (timestamp-based)
+	versionMu            sync.RWMutex        // Mutex for version updates (separate from main mutex)
+	currentVersion       DatabaseVersion     // Current version of the database
 
 	// Two-phase deletion mechanism for safe SSTable removal
 	deletionMu       sync.Mutex           // Mutex for deletion operations (separate from main engine lock)
@@ -66,12 +70,6 @@ type EngineConfig struct {
 	// Bloom filter false positive rate
 	BloomFilterFPR float64
 
-	// Use lock-free MemTable implementation for better concurrent performance.
-	// Defaults to true as of v1.x. Set to false for backward compatibility
-	// with older code that may rely on mutex-based MemTable implementation.
-	// See docs/MEMTABLE_IMPLEMENTATIONS.md for details.
-	UseLockFreeMemTable bool
-
 	// Use LSM-tree based node label index for better performance
 	UseLSMNodeLabelIndex bool
 
@@ -93,7 +91,6 @@ func DefaultEngineConfig() EngineConfig {
 		Comparator:           DefaultComparator,
 		BackgroundCompaction: true,
 		BloomFilterFPR:       0.01,             // 1% false positive rate
-		UseLockFreeMemTable:  true,             // Default to lock-free MemTable for better concurrency
 		UseLSMNodeLabelIndex: true,             // Default to using LSM-tree based node label index
 		UsePropertyIndex:     true,             // Default to using specialized property index
 		SSTableDeletionDelay: 30 * time.Second, // Default 30-second delay for SSTable deletion
@@ -144,22 +141,13 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		return nil, fmt.Errorf("failed to create WAL: %w", err)
 	}
 
-	// Create a new MemTable - either lock-free or standard based on config
-	var memTable MemTableInterface
-	if config.UseLockFreeMemTable {
-		memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    config.MemTableSize,
-			Logger:     config.Logger,
-			Comparator: config.Comparator,
-		})
-		config.Logger.Info("Using lock-free MemTable implementation")
-	} else {
-		memTable = NewMemTable(MemTableConfig{
-			MaxSize:    config.MemTableSize,
-			Logger:     config.Logger,
-			Comparator: config.Comparator,
-		})
-	}
+	// Create a new MemTable using the single-writer optimized implementation
+	memTable := NewMemTable(MemTableConfig{
+		MaxSize:    config.MemTableSize,
+		Logger:     config.Logger,
+		Comparator: config.Comparator,
+	})
+	config.Logger.Info("Using single-writer optimized MemTable implementation")
 
 	// Create the transaction manager with WAL reference
 	txManager, err := NewTransactionManager(config.DataDir, config.Logger, wal)
@@ -168,11 +156,16 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		return nil, fmt.Errorf("failed to create transaction manager: %w", err)
 	}
 
+	// Initialize the database generation with a timestamp-based unique identifier
+	// This will be used to track database structure changes
+	currentTimestamp := time.Now().UnixNano()
+	dbGeneration := uint64(currentTimestamp)
+
 	// Create the storage engine
 	engine := &StorageEngine{
 		config:               config,
 		memTable:             memTable,
-		immMemTables:         make([]MemTableInterface, 0),
+		immMemTables:         make([]*MemTable, 0),
 		sstables:             make([]*SSTable, 0),
 		wal:                  wal,
 		logger:               config.Logger,
@@ -186,7 +179,17 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 		deletionExit:         make(chan struct{}),
 		useLSMNodeLabelIndex: config.UseLSMNodeLabelIndex,
 		usePropertyIndex:     config.UsePropertyIndex,
+		dbGeneration:         dbGeneration,
 	}
+	
+	// Create the snapshot manager and set up circular references
+	engine.snapshotManager = NewSnapshotManager(engine)
+	txManager.SetEngine(engine)
+	
+	// Initialize the database version
+	engine.versionMu.Lock()
+	engine.currentVersion = NewDatabaseVersion(memTable, make([]*SSTable, 0), dbGeneration)
+	engine.versionMu.Unlock()
 
 	// Set up the condition variable for compaction
 	engine.compactionCond = sync.NewCond(&engine.mu)
@@ -201,27 +204,9 @@ func NewStorageEngine(config EngineConfig) (*StorageEngine, error) {
 	}
 
 	// Replay the WAL to recover the in-memory state
-	if memTableImpl, ok := memTable.(*MemTable); ok {
-		// Original implementation
-		if err := wal.Replay(memTableImpl); err != nil {
-			wal.Close()
-			return nil, fmt.Errorf("failed to replay WAL: %w", err)
-		}
-	} else {
-		// New lock-free implementation - we need to convert each operation
-		// Currently this is limited, but would need proper implementation
-		config.Logger.Warn("WAL replay for lock-free MemTable is limited - consider using standard MemTable for recovery")
-
-		// Simple implementation to populate the MemTable
-		opts := DefaultReplayOptions()
-		stats, err := wal.ReplayToInterface(memTable, opts)
-		if err != nil {
-			wal.Close()
-			return nil, fmt.Errorf("failed to replay WAL to lock-free MemTable: %w", err)
-		}
-
-		config.Logger.Info("Replayed %d of %d records from WAL to lock-free MemTable",
-			stats.AppliedCount, stats.RecordCount)
+	if err := wal.Replay(memTable); err != nil {
+		wal.Close()
+		return nil, fmt.Errorf("failed to replay WAL: %w", err)
 	}
 
 	// Start background compaction if enabled
@@ -327,119 +312,21 @@ func (e *StorageEngine) Close() error {
 			e.logger.Error("Failed to close transaction manager: %v", err)
 		}
 	}
+	
+	// Clean up any snapshots
+	if e.snapshotManager != nil {
+		// Clean up all snapshots (zero threshold means clean everything)
+		count := e.snapshotManager.CleanupSnapshots(0)
+		if count > 0 {
+			e.logger.Info("Cleaned up %d snapshots during shutdown", count)
+		}
+	}
 
 	e.logger.Info("Closed storage engine")
 	return nil
 }
 
-// Put adds or updates a key-value pair in the storage engine
-func (e *StorageEngine) Put(key, value []byte) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 
-	if !e.isOpen {
-		return ErrEngineClosed
-	}
-
-	// Create a transaction for this operation to ensure atomicity
-	tx := e.txManager.Begin()
-	txID := tx.id
-
-	// Check if the MemTable is full before processing the operation
-	if e.memTable.IsFull() {
-		// Mark the current MemTable as immutable
-		e.memTable.MarkFlushed()
-		e.immMemTables = append(e.immMemTables, e.memTable)
-
-		// Create a new MemTable - either lock-free or standard based on config
-		if e.config.UseLockFreeMemTable {
-			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		} else {
-			e.memTable = NewMemTable(MemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		}
-
-		// Signal the compaction thread
-		e.compactionCond.Signal()
-	}
-
-	// Record the operation in the WAL as part of the transaction
-	if err := e.wal.RecordPutInTransaction(key, value, txID); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to record put in WAL: %w", err)
-	}
-
-	// Add the key-value pair to the MemTable
-	if err := e.memTable.Put(key, value); err != nil {
-		// If MemTable update fails, roll back the transaction
-		tx.Rollback()
-		return fmt.Errorf("failed to add key-value pair to MemTable: %w", err)
-	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// Get retrieves a value by key from the storage engine
-func (e *StorageEngine) Get(key []byte) ([]byte, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	if !e.isOpen {
-		return nil, ErrEngineClosed
-	}
-
-	// Try to get the value from the current MemTable
-	value, err := e.memTable.Get(key)
-	if err == nil {
-		return value, nil
-	} else if err != ErrKeyNotFound {
-		return nil, err
-	}
-
-	// Try to get the value from immutable MemTables (newest to oldest)
-	for i := len(e.immMemTables) - 1; i >= 0; i-- {
-		value, err := e.immMemTables[i].Get(key)
-		if err == nil {
-			return value, nil
-		} else if err != ErrKeyNotFound {
-			return nil, err
-		}
-	}
-
-	// Try to get the value from active SSTables (newest to oldest)
-	for i := len(e.sstables) - 1; i >= 0; i-- {
-		value, err := e.sstables[i].Get(key)
-		if err == nil {
-			return value, nil
-		} else if err != ErrKeyNotFoundInSSTable {
-			return nil, err
-		}
-	}
-
-	// If not found in active SSTables, also check those pending deletion
-	// This ensures reads can still succeed during the deletion delay period
-	value, err = e.getFromPendingDeletionSSTables(key)
-	if err == nil {
-		// Found in an SSTable that's pending deletion
-		return value, nil
-	} else if err != ErrKeyNotFound {
-		return nil, err
-	}
-
-	return nil, ErrKeyNotFound
-}
 
 // getFromPendingDeletionSSTables checks SSTables pending deletion for a key
 // This is part of the two-phase deletion approach that ensures reads can
@@ -473,108 +360,7 @@ func (e *StorageEngine) getFromPendingDeletionSSTables(key []byte) ([]byte, erro
 	return nil, ErrKeyNotFound
 }
 
-// Delete removes a key from the storage engine
-func (e *StorageEngine) Delete(key []byte) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 
-	if !e.isOpen {
-		return ErrEngineClosed
-	}
-
-	// Create a transaction for this operation to ensure atomicity
-	tx := e.txManager.Begin()
-	txID := tx.id
-
-	// Check if the MemTable is full before processing the operation
-	if e.memTable.IsFull() {
-		// Mark the current MemTable as immutable
-		e.memTable.MarkFlushed()
-		e.immMemTables = append(e.immMemTables, e.memTable)
-
-		// Create a new MemTable - either lock-free or standard based on config
-		if e.config.UseLockFreeMemTable {
-			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		} else {
-			e.memTable = NewMemTable(MemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		}
-
-		// Signal the compaction thread
-		e.compactionCond.Signal()
-	}
-
-	// Record the delete operation in the WAL as part of the transaction
-	if err := e.wal.RecordDeleteInTransaction(key, txID); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to record delete in WAL: %w", err)
-	}
-
-	// Delete the key from the MemTable
-	if err := e.memTable.Delete(key); err != nil {
-		// If MemTable update fails, roll back the transaction
-		tx.Rollback()
-		return fmt.Errorf("failed to delete key from MemTable: %w", err)
-	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// Contains checks if a key exists in the storage engine
-func (e *StorageEngine) Contains(key []byte) (bool, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	if !e.isOpen {
-		return false, ErrEngineClosed
-	}
-
-	// Check the current MemTable
-	if e.memTable.Contains(key) {
-		return true, nil
-	}
-
-	// Check immutable MemTables (newest to oldest)
-	for i := len(e.immMemTables) - 1; i >= 0; i-- {
-		if e.immMemTables[i].Contains(key) {
-			return true, nil
-		}
-	}
-
-	// Check active SSTables (newest to oldest)
-	for i := len(e.sstables) - 1; i >= 0; i-- {
-		contains, err := e.sstables[i].Contains(key)
-		if err != nil {
-			return false, fmt.Errorf("error checking SSTable: %w", err)
-		}
-		if contains {
-			return true, nil
-		}
-	}
-
-	// Also check SSTables pending deletion
-	contains, err := e.containsInPendingDeletionSSTables(key)
-	if err != nil {
-		return false, fmt.Errorf("error checking pending deletion SSTables: %w", err)
-	}
-	if contains {
-		return true, nil
-	}
-
-	return false, nil
-}
 
 // containsInPendingDeletionSSTables checks if a key exists in any SSTable pending deletion
 func (e *StorageEngine) containsInPendingDeletionSSTables(key []byte) (bool, error) {
@@ -622,23 +408,18 @@ func (e *StorageEngine) Flush() error {
 		e.memTable.MarkFlushed()
 		e.immMemTables = append(e.immMemTables, e.memTable)
 
-		// Create a new MemTable - either lock-free or standard based on config
-		if e.config.UseLockFreeMemTable {
-			e.memTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		} else {
-			e.memTable = NewMemTable(MemTableConfig{
-				MaxSize:    e.config.MemTableSize,
-				Logger:     e.logger,
-				Comparator: e.config.Comparator,
-			})
-		}
+		// Create a new MemTable
+		e.memTable = NewMemTable(MemTableConfig{
+			MaxSize:    e.config.MemTableSize,
+			Logger:     e.logger,
+			Comparator: e.config.Comparator,
+		})
 
 		// Signal the compaction thread
 		e.compactionCond.Signal()
+		
+		// Update database version since we have a new memtable
+		e.updateDatabaseVersion()
 	}
 
 	return nil
@@ -737,131 +518,6 @@ func (e *StorageEngine) SetUseLSMNodeLabelIndex(use bool) {
 	e.useLSMNodeLabelIndex = use
 }
 
-// Scan returns a list of keys that start with the given prefix, up to the specified limit
-func (e *StorageEngine) Scan(prefix []byte, limit int) ([][]byte, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	if !e.isOpen {
-		return nil, ErrEngineClosed
-	}
-
-	// Initialize result slice
-	result := make([][]byte, 0, limit)
-	prefixStr := string(prefix)
-	e.logger.Debug("Scanning for keys with prefix: %s (limit: %d)", prefixStr, limit)
-
-	// Get keys from the current MemTable
-	memKeys := e.memTable.GetKeysWithPrefix(prefix)
-	e.logger.Debug("Found %d keys with prefix in current MemTable", len(memKeys))
-
-	// Add keys from the current MemTable to the result, up to the limit
-	for _, key := range memKeys {
-		result = append(result, key)
-		if len(result) >= limit {
-			return result, nil
-		}
-	}
-
-	// Check immutable MemTables (newest to oldest)
-	for i := len(e.immMemTables) - 1; i >= 0; i-- {
-		immKeys := e.immMemTables[i].GetKeysWithPrefix(prefix)
-		e.logger.Debug("Found %d keys with prefix in immutable MemTable %d", len(immKeys), i)
-
-		// Add keys to the result, up to the limit
-		for _, key := range immKeys {
-			// Skip duplicates
-			isDuplicate := false
-			for _, existingKey := range result {
-				if string(existingKey) == string(key) {
-					isDuplicate = true
-					break
-				}
-			}
-
-			if !isDuplicate {
-				result = append(result, key)
-				if len(result) >= limit {
-					return result, nil
-				}
-			}
-		}
-	}
-
-	// Check SSTables (newest to oldest)
-	for i := len(e.sstables) - 1; i >= 0; i-- {
-		iter, err := e.sstables[i].Iterator()
-		if err != nil {
-			e.logger.Warn("Failed to create iterator for SSTable %d: %v", e.sstables[i].ID(), err)
-			continue
-		}
-
-		// Seek to the prefix
-		iter.Seek(prefix)
-
-		// Collect keys with the prefix
-		for iter.Valid() {
-			key := iter.Key()
-
-			// Check if the key starts with the prefix
-			if !hasPrefix(key, prefix) {
-				break // We've moved past keys with this prefix
-			}
-
-			// Skip duplicates
-			isDuplicate := false
-			for _, existingKey := range result {
-				if string(existingKey) == string(key) {
-					isDuplicate = true
-					break
-				}
-			}
-
-			if !isDuplicate {
-				result = append(result, key)
-				if len(result) >= limit {
-					iter.Close()
-					return result, nil
-				}
-			}
-
-			// Move to the next key
-			if err := iter.Next(); err != nil {
-				e.logger.Warn("Error advancing iterator in SSTable %d: %v", e.sstables[i].ID(), err)
-				break
-			}
-		}
-
-		iter.Close()
-	}
-
-	// Also check SSTables pending deletion
-	pendingKeys, err := e.scanPendingDeletionSSTables(prefix, limit-len(result))
-	if err != nil {
-		e.logger.Warn("Error scanning pending deletion SSTables: %v", err)
-	} else {
-		// Add pending keys, skipping duplicates
-		for _, pendingKey := range pendingKeys {
-			isDuplicate := false
-			for _, existingKey := range result {
-				if string(existingKey) == string(pendingKey) {
-					isDuplicate = true
-					break
-				}
-			}
-
-			if !isDuplicate {
-				result = append(result, pendingKey)
-				if len(result) >= limit {
-					break
-				}
-			}
-		}
-	}
-
-	e.logger.Debug("Scan completed, found %d keys with prefix %s", len(result), prefixStr)
-	return result, nil
-}
 
 // scanPendingDeletionSSTables scans SSTables pending deletion for keys with the given prefix
 func (e *StorageEngine) scanPendingDeletionSSTables(prefix []byte, limit int) ([][]byte, error) {
@@ -945,8 +601,25 @@ func hasPrefix(s, prefix []byte) bool {
 	return true
 }
 
+// updateDatabaseVersion creates a new database version when the database structure changes
+// This helps with snapshot isolation and recycling
+func (e *StorageEngine) updateDatabaseVersion() {
+	e.versionMu.Lock()
+	defer e.versionMu.Unlock()
+	
+	// Create a new version using the current database state
+	newVersion := NewDatabaseVersion(e.memTable, e.sstables, e.dbGeneration)
+	
+	// Log the version change
+	e.logger.Debug("Updated database version from %s to %s", 
+		e.currentVersion.String(), newVersion.String())
+	
+	// Update the current version
+	e.currentVersion = newVersion
+}
+
 // GetMemTable returns the current MemTable - mainly for debugging
-func (e *StorageEngine) GetMemTable() MemTableInterface {
+func (e *StorageEngine) GetMemTable() *MemTable {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.memTable
@@ -1051,7 +724,7 @@ func (e *StorageEngine) Stats() EngineStats {
 
 // flushMemTableLocked flushes a MemTable to disk, creating a new SSTable
 // Caller must hold the lock
-func (e *StorageEngine) flushMemTableLocked(memTable MemTableInterface) error {
+func (e *StorageEngine) flushMemTableLocked(memTable *MemTable) error {
 	// Double-check to ensure we don't try to create an SSTable from an empty MemTable
 	if memTable.EntryCount() == 0 {
 		e.logger.Info("Skipping flush of empty MemTable")
@@ -1066,7 +739,10 @@ func (e *StorageEngine) flushMemTableLocked(memTable MemTableInterface) error {
 	}
 
 	// Begin a transaction for the flush operation
-	tx := e.txManager.Begin()
+	tx, err := e.txManager.BeginTransaction(DefaultTxOptions())
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for flush operation: %w", err)
+	}
 
 	// Create a new SSTable from the MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
@@ -1105,6 +781,9 @@ func (e *StorageEngine) flushMemTableLocked(memTable MemTableInterface) error {
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
+	
+	// Update the database version since the structure has changed
+	e.updateDatabaseVersion()
 
 	e.logger.Info("Flushed MemTable to SSTable %d with %d keys", sstable.ID(), sstable.KeyCount())
 	return nil
@@ -1426,23 +1105,14 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	e.logger.Debug("Starting compaction of level 0")
 	e.logger.Info("Starting compaction of level 0 with %d files", len(lc.Levels[0]))
 
-	// Create a new MemTable to merge level 0 SSTables - either lock-free or standard based on config
-	var mergedMemTable MemTableInterface
-	if e.config.UseLockFreeMemTable {
-		e.logger.Debug("Creating lock-free MemTable for compaction")
-		mergedMemTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
-	} else {
-		e.logger.Debug("Creating standard MemTable for compaction")
-		mergedMemTable = NewMemTable(MemTableConfig{
-			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
-	}
+	// Create a new MemTable to merge level 0 SSTables
+	var mergedMemTable *MemTable
+	e.logger.Debug("Creating MemTable for compaction")
+	mergedMemTable = NewMemTable(MemTableConfig{
+		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+		Logger:     e.logger,
+		Comparator: e.config.Comparator,
+	})
 
 	e.logger.Debug("Reading key-value pairs from level 0 SSTables")
 	// Read all key-value pairs from level 0 SSTables (newest to oldest for correct overwrite semantics)
@@ -1540,7 +1210,10 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	e.logger.Debug("Merged MemTable now contains %d entries total", mergedMemTable.EntryCount())
 	e.logger.Debug("Beginning transaction for compaction")
 	// Begin a transaction for the compaction operation
-	tx := e.txManager.Begin()
+	tx, err := e.txManager.BeginTransaction(DefaultTxOptions())
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for compaction: %w", err)
+	}
 	e.logger.Debug("Started transaction %d", tx.id)
 
 	// Create a new SSTable from the merged MemTable
@@ -1614,6 +1287,9 @@ func (e *StorageEngine) compactLevel0(lc *LeveledCompaction) error {
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
+	
+	// Update the database version since the structure has changed
+	e.updateDatabaseVersion()
 
 	e.logger.Debug("Marking old SSTables for deletion")
 	// Mark old SSTables for deletion instead of immediately closing them
@@ -1641,21 +1317,13 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 
 	e.logger.Info("Starting compaction of level %d with %d files", level, len(lc.Levels[level]))
 
-	// Create a new MemTable to merge SSTables - either lock-free or standard based on config
-	var mergedMemTable MemTableInterface
-	if e.config.UseLockFreeMemTable {
-		mergedMemTable = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
-	} else {
-		mergedMemTable = NewMemTable(MemTableConfig{
-			MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
-			Logger:     e.logger,
-			Comparator: e.config.Comparator,
-		})
-	}
+	// Create a new MemTable to merge SSTables
+	var mergedMemTable *MemTable
+	mergedMemTable = NewMemTable(MemTableConfig{
+		MaxSize:    e.config.MemTableSize * 100, // Much larger for compaction
+		Logger:     e.logger,
+		Comparator: e.config.Comparator,
+	})
 
 	// First read all key-value pairs from the current level
 	for _, sstable := range lc.Levels[level] {
@@ -1718,7 +1386,10 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 	}
 
 	// Begin a transaction for the compaction operation
-	tx := e.txManager.Begin()
+	tx, err := e.txManager.BeginTransaction(DefaultTxOptions())
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for compaction: %w", err)
+	}
 
 	// Create a new SSTable from the merged MemTable
 	sstableDir := filepath.Join(e.config.DataDir, "sstables")
@@ -1782,6 +1453,9 @@ func (e *StorageEngine) compactLevel(lc *LeveledCompaction, level int) error {
 	// After successful commit, update in-memory state
 	e.sstables = newSSTables
 	e.nextSSTableID++
+	
+	// Update the database version since the structure has changed
+	e.updateDatabaseVersion()
 
 	// Mark old SSTables for deletion instead of immediately closing them
 	// This allows ongoing reads to complete even after compaction finishes

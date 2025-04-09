@@ -200,6 +200,7 @@ func (t *Traversal) getNeighbors(nodeID uint64, direction string) ([]model.Node,
 	if direction == DirectionOutgoing || direction == DirectionBoth {
 		// Get outgoing edges
 		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
+		fmt.Printf("DEBUG traversal: Looking for outgoing edges with key: %s\n", string(outKey))
 		outEdgeIDsBytes, err := t.EdgeIndex.Get(outKey)
 		if err != nil && err != storage.ErrKeyNotFound {
 			return nil, fmt.Errorf("error getting outgoing edges for node %d: %w", nodeID, err)

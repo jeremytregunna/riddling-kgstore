@@ -22,22 +22,13 @@ func generateKeyValuePairs(n int) ([][]byte, [][]byte) {
 	return keys, values
 }
 
-// benchmarkMemTablePut benchmarks the Put operation for a specific MemTable implementation
-func benchmarkMemTablePut(b *testing.B, isLockFree bool) {
-	var mt MemTableInterface
-	if isLockFree {
-		mt = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	} else {
-		mt = NewMemTable(MemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	}
+// benchmarkMemTablePut benchmarks the Put operation
+func benchmarkMemTablePut(b *testing.B) {
+	mt := NewMemTable(MemTableConfig{
+		MaxSize:    100 * 1024 * 1024, // 100MB
+		Logger:     model.DefaultLoggerInstance,
+		Comparator: DefaultComparator,
+	})
 
 	keys, values := generateKeyValuePairs(b.N)
 
@@ -47,22 +38,13 @@ func benchmarkMemTablePut(b *testing.B, isLockFree bool) {
 	}
 }
 
-// benchmarkMemTableGet benchmarks the Get operation for a specific MemTable implementation
-func benchmarkMemTableGet(b *testing.B, isLockFree bool) {
-	var mt MemTableInterface
-	if isLockFree {
-		mt = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	} else {
-		mt = NewMemTable(MemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	}
+// benchmarkMemTableGet benchmarks the Get operation
+func benchmarkMemTableGet(b *testing.B) {
+	mt := NewMemTable(MemTableConfig{
+		MaxSize:    100 * 1024 * 1024, // 100MB
+		Logger:     model.DefaultLoggerInstance,
+		Comparator: DefaultComparator,
+	})
 
 	// Prepare data
 	keys, values := generateKeyValuePairs(b.N)
@@ -85,22 +67,7 @@ func benchmarkMemTableGet(b *testing.B, isLockFree bool) {
 }
 
 // benchmarkMemTableConcurrentPut benchmarks concurrent Put operations
-func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines int) {
-	var mt MemTableInterface
-	if isLockFree {
-		mt = NewLockFreeMemTable(LockFreeMemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	} else {
-		mt = NewMemTable(MemTableConfig{
-			MaxSize:    100 * 1024 * 1024, // 100MB
-			Logger:     model.DefaultLoggerInstance,
-			Comparator: DefaultComparator,
-		})
-	}
-
+func benchmarkMemTableConcurrentPut(b *testing.B, numGoroutines int) {
 	// For concurrent benchmark, we'll generate a fixed number of operations
 	// This is more predictable than using b.N which can be very large
 	const totalOps = 10000
@@ -119,19 +86,11 @@ func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines
 	// Run the benchmark b.N times
 	for n := 0; n < b.N; n++ {
 		// Reset the memtable for each iteration
-		if isLockFree {
-			mt = NewLockFreeMemTable(LockFreeMemTableConfig{
-				MaxSize:    100 * 1024 * 1024,
-				Logger:     model.DefaultLoggerInstance,
-				Comparator: DefaultComparator,
-			})
-		} else {
-			mt = NewMemTable(MemTableConfig{
-				MaxSize:    100 * 1024 * 1024,
-				Logger:     model.DefaultLoggerInstance,
-				Comparator: DefaultComparator,
-			})
-		}
+		mt := NewMemTable(MemTableConfig{
+			MaxSize:    100 * 1024 * 1024,
+			Logger:     model.DefaultLoggerInstance,
+			Comparator: DefaultComparator,
+		})
 
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
@@ -154,7 +113,7 @@ func benchmarkMemTableConcurrentPut(b *testing.B, isLockFree bool, numGoroutines
 }
 
 // benchmarkMemTableConcurrentGetPut benchmarks concurrent Get and Put operations
-func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGoroutines int, readPercentage int) {
+func benchmarkMemTableConcurrentGetPut(b *testing.B, numGoroutines int, readPercentage int) {
 	// For concurrent benchmark, we'll use a fixed number of operations
 	const totalOps = 10000
 	opsPerGoroutine := totalOps / numGoroutines
@@ -197,20 +156,11 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 	// Run the benchmark b.N times
 	for n := 0; n < b.N; n++ {
 		// Create and populate a fresh MemTable for each iteration
-		var mt MemTableInterface
-		if isLockFree {
-			mt = NewLockFreeMemTable(LockFreeMemTableConfig{
-				MaxSize:    100 * 1024 * 1024, // 100MB
-				Logger:     model.DefaultLoggerInstance,
-				Comparator: DefaultComparator,
-			})
-		} else {
-			mt = NewMemTable(MemTableConfig{
-				MaxSize:    100 * 1024 * 1024, // 100MB
-				Logger:     model.DefaultLoggerInstance,
-				Comparator: DefaultComparator,
-			})
-		}
+		mt := NewMemTable(MemTableConfig{
+			MaxSize:    100 * 1024 * 1024, // 100MB
+			Logger:     model.DefaultLoggerInstance,
+			Comparator: DefaultComparator,
+		})
 
 		// Prepopulate with initial data
 		for i := 0; i < initialDataSize; i++ {
@@ -245,98 +195,49 @@ func benchmarkMemTableConcurrentGetPut(b *testing.B, isLockFree bool, numGorouti
 
 // Standard MemTable Benchmarks
 func BenchmarkMemTable_Put(b *testing.B) {
-	benchmarkMemTablePut(b, false)
+	benchmarkMemTablePut(b)
 }
 
 func BenchmarkMemTable_Get(b *testing.B) {
-	benchmarkMemTableGet(b, false)
+	benchmarkMemTableGet(b)
 }
 
 func BenchmarkMemTable_ConcurrentPut_2(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, false, 2)
+	benchmarkMemTableConcurrentPut(b, 2)
 }
 
 func BenchmarkMemTable_ConcurrentPut_4(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, false, 4)
+	benchmarkMemTableConcurrentPut(b, 4)
 }
 
 func BenchmarkMemTable_ConcurrentPut_8(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, false, 8)
+	benchmarkMemTableConcurrentPut(b, 8)
 }
 
 func BenchmarkMemTable_ConcurrentPut_16(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, false, 16)
+	benchmarkMemTableConcurrentPut(b, 16)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_2_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 2, 50)
+	benchmarkMemTableConcurrentGetPut(b, 2, 50)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_4_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 4, 50)
+	benchmarkMemTableConcurrentGetPut(b, 4, 50)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_8_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 8, 50)
+	benchmarkMemTableConcurrentGetPut(b, 8, 50)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_16_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 16, 50)
+	benchmarkMemTableConcurrentGetPut(b, 16, 50)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_8_Read80(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 8, 80)
+	benchmarkMemTableConcurrentGetPut(b, 8, 80)
 }
 
 func BenchmarkMemTable_ConcurrentGetPut_8_Read20(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, false, 8, 20)
-}
-
-// Lock-Free MemTable Benchmarks
-func BenchmarkLockFreeMemTable_Put(b *testing.B) {
-	benchmarkMemTablePut(b, true)
-}
-
-func BenchmarkLockFreeMemTable_Get(b *testing.B) {
-	benchmarkMemTableGet(b, true)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentPut_2(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, true, 2)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentPut_4(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, true, 4)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentPut_8(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, true, 8)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentPut_16(b *testing.B) {
-	benchmarkMemTableConcurrentPut(b, true, 16)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_2_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 2, 50)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_4_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 4, 50)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_8_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 8, 50)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_16_Read50(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 16, 50)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_8_Read80(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 8, 80)
-}
-
-func BenchmarkLockFreeMemTable_ConcurrentGetPut_8_Read20(b *testing.B) {
-	benchmarkMemTableConcurrentGetPut(b, true, 8, 20)
+	benchmarkMemTableConcurrentGetPut(b, 8, 20)
 }

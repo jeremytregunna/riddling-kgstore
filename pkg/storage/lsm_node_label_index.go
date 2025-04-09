@@ -143,7 +143,7 @@ func (idx *lsmNodeLabelIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error
 }
 
 // scanMemTableWithPrefix scans a MemTable for keys with a specific prefix
-func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable MemTableInterface, prefix []byte) ([][]byte, error) {
+func (idx *lsmNodeLabelIndex) scanMemTableWithPrefix(memTable *MemTable, prefix []byte) ([][]byte, error) {
 	// This implementation assumes we can iterate through the MemTable
 	result := make([][]byte, 0)
 
@@ -255,6 +255,35 @@ func (idx *lsmNodeLabelIndex) GetAll(label []byte) ([][]byte, error) {
 		return cached, nil
 	}
 
+	// For individual lookups using just numerical IDs
+	// When using keys created with FormatNodeLabelKey, we can extract the node IDs directly
+	nodes := make([][]byte, 0, 10)
+	entries := idx.storage.memTable.GetEntries()
+	for i := 0; i < len(entries); i += 2 {
+		key := entries[i]
+		if len(key) > 0 {
+			// Check this key format: nl:Person:1
+			// Look for the label pattern
+			labelStr := string(label)
+			labelPattern := fmt.Sprintf("%s%s:", string(idx.keyPrefix), labelStr)
+			
+			if bytes.HasPrefix(key, []byte(labelPattern)) {
+				// Found a matching key, extract the node ID
+				parts := bytes.Split(key, []byte(":"))
+				if len(parts) >= 3 {
+					nodeID := parts[2]
+					nodes = append(nodes, nodeID)
+				}
+			}
+		}
+	}
+	
+	if len(nodes) > 0 {
+		idx.cache.Put(label, nodes)
+		return nodes, nil
+	}
+
+	// Fall back to the regular prefix scan if direct lookup didn't work
 	// Create a prefix for range scan
 	prefix := idx.makeLabelPrefix(label)
 	idx.logger.Debug("Scanning LSM index with prefix '%s'", string(prefix))

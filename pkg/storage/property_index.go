@@ -319,7 +319,7 @@ func (idx *propertyIndex) scanKeysWithPrefix(prefix []byte) ([][]byte, error) {
 }
 
 // scanMemTableWithPrefix scans a MemTable for keys with a specific prefix
-func (idx *propertyIndex) scanMemTableWithPrefix(memTable MemTableInterface, prefix []byte) ([][]byte, error) {
+func (idx *propertyIndex) scanMemTableWithPrefix(memTable *MemTable, prefix []byte) ([][]byte, error) {
 	// This implementation assumes we can iterate through the MemTable
 	result := make([][]byte, 0)
 
@@ -501,7 +501,7 @@ func (idx *propertyIndex) deleteByPrefix(prefix []byte) error {
 }
 
 // collectKeysWithPrefixFromMemTable collects all keys with a given prefix from a MemTable
-func (idx *propertyIndex) collectKeysWithPrefixFromMemTable(memTable MemTableInterface, prefix []byte) [][]byte {
+func (idx *propertyIndex) collectKeysWithPrefixFromMemTable(memTable *MemTable, prefix []byte) [][]byte {
 	result := make([][]byte, 0)
 
 	// For MemTable, use the GetEntries method and filter by prefix

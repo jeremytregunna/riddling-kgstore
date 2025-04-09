@@ -95,7 +95,7 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
 * **ACID Compliance Enhancements:**
     * [x] Complete the implementation of configurable WAL replay options
     * [x] Implement stronger atomicity guarantees during crash recovery
-    * [ ] Add support for multi-operation transactions with proper isolation
+    * [x] Add support for multi-operation transactions with proper isolation
     * [ ] Improve durability with configurable sync barriers
     * [ ] Implement consistency checks and validation during operations
 * **Optimization:**
@@ -105,7 +105,7 @@ Here's a detailed breakdown of TODO lists for each phase of the KGStore developm
     * [ ] Implement data compression (could be compress/gzip or similar, but has to be fast and good performance).
     * [ ] Implement property value statistics for better query optimization.
     * [ ] Implement columnar storage for property indexes to improve compression and query performance.
-    * [ ] Implement transaction buffer with size limits to trigger background flushes when reaching thresholds.
+    * [x] Implement transaction buffer with size limits to trigger background flushes when reaching thresholds.
 * **Testing:**
     * [ ] Performance benchmarks for different indexing strategies.
     * [ ] Performance benchmarks for different optimization techniques.

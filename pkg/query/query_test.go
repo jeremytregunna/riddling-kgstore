@@ -58,6 +58,7 @@ func TestEngine_API(t *testing.T) {
 		}
 		if len(result.Paths) != 1 {
 			t.Errorf("Expected 1 path, got %d", len(result.Paths))
+			return // Skip further checks
 		}
 		if len(result.Paths[0].Nodes) < 3 {
 			t.Errorf("Expected at least 3 nodes in path, got %d", len(result.Paths[0].Nodes))

@@ -451,7 +451,10 @@ func TestSimpleTransactionIntegration(t *testing.T) {
 		}
 
 		// Record the first transaction ID
-		tx := txManager.Begin()
+		tx, err := txManager.BeginTransaction(DefaultTxOptions())
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
 		firstTxID := tx.id
 		t.Logf("First transaction ID: %d", firstTxID)
 
@@ -501,7 +504,10 @@ func TestSimpleTransactionIntegration(t *testing.T) {
 		defer txManager.Close()
 
 		// Verify transaction continuity by checking next ID
-		newTx := txManager.Begin()
+		newTx, err := txManager.BeginTransaction(DefaultTxOptions())
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
 		t.Logf("New transaction ID: %d", newTx.id)
 		defer newTx.Rollback()
 

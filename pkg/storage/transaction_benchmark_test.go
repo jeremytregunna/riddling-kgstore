@@ -67,7 +67,10 @@ func BenchmarkTransactionCommit(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				// Start a new transaction
-				tx := tm.Begin()
+				tx, err := tm.BeginTransaction(DefaultTxOptions())
+				if err != nil {
+					b.Fatalf("Failed to begin transaction: %v", err)
+				}
 
 				// Add operations to the transaction
 				for j := 0; j < tt.operationCount; j++ {
@@ -108,7 +111,10 @@ func BenchmarkTransactionRollback(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				// Start a new transaction
-				tx := tm.Begin()
+				tx, err := tm.BeginTransaction(DefaultTxOptions())
+				if err != nil {
+					b.Fatalf("Failed to begin transaction: %v", err)
+				}
 
 				// Add operations to the transaction
 				for j := 0; j < tt.operationCount; j++ {
@@ -156,7 +162,10 @@ func BenchmarkConcurrentTransactions(b *testing.B) {
 				counter := 0
 				for pb.Next() {
 					// Start a new transaction
-					tx := tm.Begin()
+					tx, err := tm.BeginTransaction(DefaultTxOptions())
+					if err != nil {
+						b.Fatalf("Failed to begin transaction: %v", err)
+					}
 
 					// Add operations to the transaction
 					for j := 0; j < tt.operationCount; j++ {
@@ -222,7 +231,10 @@ func BenchmarkMixedTransactionWorkload(b *testing.B) {
 			mu.Unlock()
 
 			// Start a transaction
-			tx := tm.Begin()
+			tx, err := tm.BeginTransaction(DefaultTxOptions())
+			if err != nil {
+				b.Fatalf("Failed to begin transaction: %v", err)
+			}
 
 			// Add a mix of operations based on counter value
 			if myCounter%3 == 0 {

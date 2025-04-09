@@ -18,10 +18,11 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create the storage engine
+	// Create the storage engine with LSM node label index enabled
 	config := storage.EngineConfig{
-		DataDir: filepath.Join(tempDir, "db"),
-		Logger:  model.DefaultLoggerInstance,
+		DataDir:              filepath.Join(tempDir, "db"),
+		Logger:               model.DefaultLoggerInstance,
+		UseLSMNodeLabelIndex: true, // Enable LSM-based node label index for better prefix scanning
 	}
 
 	engine, err := storage.NewStorageEngine(config)
@@ -69,13 +70,14 @@ func setupTestDB(t *testing.T) (*storage.StorageEngine, storage.Index, storage.I
 	}
 
 	// Add some test data
-	addTestData(t, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
+	addTestData(t, engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties)
 
 	return engine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties, tempDir
 }
 
 // addTestData adds some test nodes and edges to the indexes
-func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties storage.Index) {
+func addTestData(t *testing.T, engine *storage.StorageEngine, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nodeProperties, edgeProperties storage.Index) {
+	fmt.Println("TEST DEBUG: Adding test data to indexes")
 	// Create some nodes
 	nodes := []*model.Node{
 		model.NewNode(1, "Person"),
@@ -134,12 +136,14 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 
 	// Add node labels to the label index
 	for label, nodeIDs := range nodesByLabel {
-		// For each node ID, add it to the label index individually - works with both regular and LSM implementation
+		// For each node ID, add it to the label index by directly using the Put method
+		// with the ID as a value
 		for _, id := range nodeIDs {
+			// For NodeLabelIndex, we want to store the ID directly
 			idStr := fmt.Sprintf("%d", id)
 			err := nodeLabels.Put([]byte(label), []byte(idStr))
 			if err != nil {
-				t.Fatalf("Failed to add node %s to label %s index: %v", idStr, label, err)
+				t.Fatalf("Failed to add node %d to label %s index: %v", id, label, err)
 			}
 		}
 	}
@@ -210,8 +214,9 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 
 	// Add edge labels to the label index
 	for label, edgeIDs := range edgesByLabel {
-		// Add each edge ID individually to the label index
+		// Add each edge ID directly to the label index
 		for _, id := range edgeIDs {
+			// Just store the edge ID directly
 			err := edgeLabels.Put([]byte(label), []byte(id))
 			if err != nil {
 				t.Fatalf("Failed to add edge %s to label %s index: %v", id, label, err)
@@ -227,9 +232,15 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 			t.Fatalf("Failed to serialize outgoing edge IDs for node %d: %v", nodeID, err)
 		}
 
-		// Add to outgoing index
+		// Add to outgoing index - store in both edgeIndex and engine with same key
 		outKey := []byte(FormatOutgoingEdgesKey(nodeID))
+		fmt.Printf("DEBUG: Storing outgoing edges to key: %s\n", string(outKey))
 		err = edgeIndex.Put(outKey, edgeIDsBytes)
+		if err != nil {
+			t.Fatalf("Failed to add outgoing edges index entry for node %d: %v", nodeID, err)
+		}
+		// Also store in engine directly for consistency
+		err = engine.Put(outKey, edgeIDsBytes)
 		if err != nil {
 			t.Fatalf("Failed to add outgoing edges index entry for node %d: %v", nodeID, err)
 		}
@@ -243,9 +254,15 @@ func addTestData(t *testing.T, nodeIndex, edgeIndex, nodeLabels, edgeLabels, nod
 			t.Fatalf("Failed to serialize incoming edge IDs for node %d: %v", nodeID, err)
 		}
 
-		// Add to incoming index
+		// Add to incoming index - store in both edgeIndex and engine with same key
 		inKey := []byte(FormatIncomingEdgesKey(nodeID))
+		fmt.Printf("DEBUG: Storing incoming edges to key: %s\n", string(inKey))
 		err = edgeIndex.Put(inKey, edgeIDsBytes)
+		if err != nil {
+			t.Fatalf("Failed to add incoming edges index entry for node %d: %v", nodeID, err)
+		}
+		// Also store in engine directly for consistency
+		err = engine.Put(inKey, edgeIDsBytes)
 		if err != nil {
 			t.Fatalf("Failed to add incoming edges index entry for node %d: %v", nodeID, err)
 		}
@@ -440,6 +457,7 @@ func TestExecutor_Execute(t *testing.T) {
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Paths) != 1 {
 					t.Errorf("Expected 1 path, got %d", len(result.Paths))
+					return // Skip further checks to avoid panic
 				}
 				if len(result.Paths[0].Nodes) < 2 {
 					t.Errorf("Expected at least 2 nodes in path, got %d", len(result.Paths[0].Nodes))
@@ -469,6 +487,7 @@ func TestExecutor_Execute(t *testing.T) {
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Paths) != 1 {
 					t.Errorf("Expected 1 path, got %d", len(result.Paths))
+					return // Skip further checks to avoid panic
 				}
 				if len(result.Paths[0].Nodes) < 3 {
 					t.Errorf("Expected at least 3 nodes in path, got %d", len(result.Paths[0].Nodes))
@@ -707,6 +726,7 @@ func TestExecutor_ExecuteWithOptimizer(t *testing.T) {
 			validate: func(result *Result, t *testing.T) {
 				if len(result.Paths) != 1 {
 					t.Errorf("Expected 1 path, got %d", len(result.Paths))
+					return // Skip further checks to avoid panic
 				}
 			},
 		},

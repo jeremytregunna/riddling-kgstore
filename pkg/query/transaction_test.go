@@ -233,7 +233,7 @@ func TestDataManipulationOperations(t *testing.T) {
 		createEdgeQuery := &Query{
 			Type: QueryTypeCreateEdge,
 			Parameters: map[string]string{
-				ParamSource:   nodeID1,
+				ParamSourceID: nodeID1,
 				ParamTargetID: nodeID2,
 				ParamLabel:    "KNOWS",
 			},
@@ -390,7 +390,8 @@ func TestDataManipulationOperations(t *testing.T) {
 	})
 
 	t.Run("Delete_Edge", func(t *testing.T) {
-		// Create two nodes first
+		// Instead of using a transaction, create nodes individually to ensure they're committed
+		// before we try to create an edge between them
 		createNode1Query := &Query{
 			Type: QueryTypeCreateNode,
 			Parameters: map[string]string{
@@ -403,6 +404,7 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Fatalf("Failed to create node 1: %v", err)
 		}
 		nodeID1 := result1.NodeID
+		t.Logf("Created node 1 with ID: %s", nodeID1)
 
 		createNode2Query := &Query{
 			Type: QueryTypeCreateNode,
@@ -416,12 +418,13 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Fatalf("Failed to create node 2: %v", err)
 		}
 		nodeID2 := result2.NodeID
+		t.Logf("Created node 2 with ID: %s", nodeID2)
 
-		// Create an edge between them
+		// Create an edge between them - each operation is now in its own auto-transaction
 		createEdgeQuery := &Query{
 			Type: QueryTypeCreateEdge,
 			Parameters: map[string]string{
-				ParamSource:   nodeID1,
+				ParamSourceID: nodeID1,
 				ParamTargetID: nodeID2,
 				ParamLabel:    "KNOWS",
 			},
@@ -432,8 +435,9 @@ func TestDataManipulationOperations(t *testing.T) {
 			t.Fatalf("Failed to create edge: %v", err)
 		}
 		edgeID := result.EdgeID
+		t.Logf("Created edge with ID: %s", edgeID)
 
-		// Delete the edge
+		// Delete the edge in a new transaction
 		deleteEdgeQuery := &Query{
 			Type: QueryTypeDeleteEdge,
 			Parameters: map[string]string{
@@ -454,6 +458,7 @@ func TestDataManipulationOperations(t *testing.T) {
 		if result.EdgeID != edgeID {
 			t.Errorf("Expected edge ID to be %s, got %s", edgeID, result.EdgeID)
 		}
+		t.Log("Edge deleted successfully")
 	})
 }
 
